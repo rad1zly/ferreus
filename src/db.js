@@ -90,10 +90,10 @@ function init() {
         buy_liquidity_usd, sell_liquidity_usd, min_liquidity_usd,
         trade_size_usd, est_gross_usd, est_gas_usd, est_net_usd, raw_json
       ) VALUES (
-        @ts, @token_mint, @token_symbol, @buy_dex, @sell_dex,
-        @buy_price_usd, @sell_price_usd, @gap_bps,
-        @buy_liquidity_usd, @sell_liquidity_usd, @min_liquidity_usd,
-        @trade_size_usd, @est_gross_usd, @est_gas_usd, @est_net_usd, @raw_json
+        ?, ?, ?, ?, ?,
+        ?, ?, ?,
+        ?, ?, ?,
+        ?, ?, ?, ?, ?
       )
     `),
     insertNewPool: db.prepare(`
