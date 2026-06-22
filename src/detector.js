@@ -67,7 +67,10 @@ class Detector {
     const pairs = await dexscreener.getTokenPairs(token.address);
     if (pairs.length < 2) return null;
 
-    const byDex = dexscreener.groupByDex(pairs);
+    // CRITICAL (per DexScreener docs): priceUsd is the price of baseToken in USD.
+    // Pass targetMint so groupByDex filters to baseToken === target — otherwise
+    // we'd compare USDC-price to SOL-price when querying USDC.
+    const byDex = dexscreener.groupByDex(pairs, token.address);
     if (byDex.length < 2) return null;
 
     // Find lowest (buy) and highest (sell) price
@@ -81,8 +84,22 @@ class Detector {
 
     const minPrice = bestBuy.price;
     const maxPrice = bestSell.price;
+    if (minPrice <= 0 || !Number.isFinite(minPrice) || !Number.isFinite(maxPrice)) return null;
     const gapBps = ((maxPrice - minPrice) / minPrice) * 10000;
     if (gapBps < config.MIN_GAP_BPS) return null;
+
+    // Sanity cap: a real DEX-DEX gap > 50% on an actively-traded pair is almost
+    // certainly a data anomaly (wrong token, decimal mismatch, stale price).
+    // Real gaps on Solana DEXes are typically 10-200 bps. Log + skip if absurd.
+    const MAX_REASONABLE_GAP_BPS = 5000;
+    if (gapBps > MAX_REASONABLE_GAP_BPS) {
+      log.warn(
+        `[detector] absurd gap ${gapBps.toFixed(0)}bps ${token.symbol} ` +
+        `${bestBuy.dexId}→${bestSell.dexId} ` +
+        `($${minPrice.toFixed(4)}→$${maxPrice.toFixed(4)}) — skipping as data anomaly`
+      );
+      return null;
+    }
 
     // Liquidity floor
     const minLiq = Math.min(bestBuy.liquidity, bestSell.liquidity);

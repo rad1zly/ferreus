@@ -63,7 +63,7 @@ async function run() {
     check('dexscreener SOL pairs (>=2 Solana DEXes)', solanaPairs.length >= 2, `${solanaPairs.length} pairs`);
 
     if (solanaPairs.length >= 2) {
-      const byDex = dexscreener.groupByDex(solanaPairs);
+      const byDex = dexscreener.groupByDex(solanaPairs, solMint);
       check('groupByDex returns multiple DEXes', byDex.length >= 2, byDex.map(d => d.dexId).join(','));
     }
   } catch (e) {
