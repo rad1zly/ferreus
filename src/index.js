@@ -6,6 +6,8 @@ const db = require('./db');
 const Detector = require('./detector');
 const newPoolMonitor = require('./newPoolMonitor');
 const pumpfunMonitor = require('./pumpfunMonitor');
+const coingecko = require('./coingecko');
+const jitoTip = require('./jitoTip');
 const telegramBot = require('./telegramBot');
 const notifier = require('./notifier');
 const safety = require('./safety');
@@ -56,6 +58,17 @@ async function main() {
   newPoolMonitor.start();
   pumpfunMonitor.start();
 
+  // --- Auxiliary signals (CoinGecko trending, Jito tip floor) ---
+  // CoinGecko: refresh every 5 min — slow signal, mostly informational
+  let lastTrendingRefresh = 0;
+  const TRENDING_REFRESH_MS = 5 * 60 * 1000;
+
+  // Jito tip: refresh every 60s (cached internally), show at startup
+  const initialTip = await jitoTip.getTipFloor();
+  if (initialTip) {
+    log.info(`[main] Jito tip floor ready — p50=${(initialTip.p50_lamports/1e9).toFixed(4)} SOL`);
+  }
+
   // --- Detector A loop (separate from B/C which self-tick) ---
   let totalOpps = 0;
   let lastTokenListRefresh = Date.now();
@@ -95,6 +108,20 @@ async function main() {
           lastTokenListRefresh = Date.now();
         } catch (e) {
           log.warn(`[main] token list refresh: ${e.message}`);
+        }
+      }
+
+      // CoinGecko trending refresh (5 min)
+      if (Date.now() - lastTrendingRefresh > TRENDING_REFRESH_MS) {
+        try {
+          const solTrending = await coingecko.getSolanaTrending();
+          if (solTrending.length > 0) {
+            const top = solTrending.slice(0, 5).map(t => `${t.symbol}(#${t.marketCapRank || '?'})`).join(', ');
+            log.info(`[coingecko] Solana trending top 5: ${top}`);
+          }
+          lastTrendingRefresh = Date.now();
+        } catch (e) {
+          log.warn(`[main] coingecko trending refresh: ${e.message}`);
         }
       }
 

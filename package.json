@@ -5,8 +5,9 @@
   "main": "index.js",
   "type": "commonjs",
   "scripts": {
-    "start": "node index.js",
-    "smoke": "node scripts/smoke-test.js"
+    "start": "node src/index.js",
+    "smoke": "node scripts/smoke-test.js",
+    "find-launchpads": "node scripts/find-launchpads.js"
   },
   "dependencies": {
     "axios": "^1.7.7",

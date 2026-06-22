@@ -18,14 +18,18 @@ class SolanaRpc {
     });
     this._lastRequestTs = 0;
     this._minInterval = 250; // public RPC rate limit ~10 RPS; 4 RPS = safe headroom
+    this._consecutiveRateLimits = 0; // exponential backoff state
   }
 
   async _throttle() {
     const now = Date.now();
     const elapsed = now - this._lastRequestTs;
-    if (elapsed < this._minInterval) {
-      await new Promise(r => setTimeout(r, this._minInterval - elapsed));
-    }
+
+    // Exponential backoff after 429s. Each consecutive 429 doubles the
+    // minimum interval, capped at 5s. Resets on first successful call.
+    const dynamicMin = Math.min(this._minInterval * Math.pow(2, this._consecutiveRateLimits), 5000);
+    const wait = Math.max(dynamicMin - elapsed, 0);
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
     this._lastRequestTs = Date.now();
   }
 
@@ -41,9 +45,15 @@ class SolanaRpc {
       if (res.data.error) {
         throw new Error(`${res.data.error.code}: ${res.data.error.message}`);
       }
+      this._consecutiveRateLimits = 0; // success — reset
       return res.data.result;
     } catch (e) {
-      log.warn(`[rpc] ${method} failed: ${e.message}`);
+      if (e.response && e.response.status === 429) {
+        this._consecutiveRateLimits = Math.min((this._consecutiveRateLimits || 0) + 1, 5);
+        log.warn(`[rpc] ${method} rate-limited (consecutive=${this._consecutiveRateLimits}), backing off`);
+      } else {
+        log.warn(`[rpc] ${method} failed: ${e.message}`);
+      }
       return null;
     }
   }

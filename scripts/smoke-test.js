@@ -17,6 +17,8 @@ const Detector = require('../src/detector');
 const rpc = require('../src/solanaRpc');
 const newPoolMonitor = require('../src/newPoolMonitor');
 const pumpfunMonitor = require('../src/pumpfunMonitor');
+const coingecko = require('../src/coingecko');
+const jitoTip = require('../src/jitoTip');
 
 async function run() {
   log.info('=== Ferreus smoke test (v0.2.0) ===\n');
@@ -124,6 +126,28 @@ async function run() {
   check('safety pause works', safety.isPaused() === true);
   safety.resume();
   check('safety resume works', safety.isPaused() === false);
+
+  // 10. CoinGecko trending
+  try {
+    const trending = await coingecko.getTrending();
+    check('coingecko trending (>=5 tokens)', trending.length >= 5, `${trending.length} trending tokens`);
+    const sol = await coingecko.getSolanaTrending();
+    check('coingecko Solana trending filter', true, `${sol.length} Solana tokens (out of ${trending.length} total)`);
+  } catch (e) {
+    check('coingecko', false, e.message);
+  }
+
+  // 11. Jito tip floor
+  try {
+    const floor = await jitoTip.getTipFloor();
+    check('jito tip floor', !!floor, floor ? `p50=${(floor.p50_lamports/1e9).toFixed(4)} SOL` : 'no data');
+    // Test recommender
+    const rec = await jitoTip.recommendTipLamports(500);
+    check('jito recommendTipLamports', !!rec && typeof rec.tipLamports === 'number',
+      rec ? `${(rec.tipLamports/1e9).toFixed(6)} SOL for $500 opp` : 'no rec');
+  } catch (e) {
+    check('jito', false, e.message);
+  }
 
   return done(pass, fail);
 }
