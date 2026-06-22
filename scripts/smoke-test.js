@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Ferreus smoke test — validates config + DB + each API client.
+ * Ferreus smoke test — validates config + DB + each API client + detectors.
  * Run with: npm run smoke
  *
  * Exits 0 on all-pass, 1 on any failure.
@@ -14,9 +14,12 @@ const dexscreener = require('../src/dexScreener');
 const db = require('../src/db');
 const safety = require('../src/safety');
 const Detector = require('../src/detector');
+const rpc = require('../src/solanaRpc');
+const newPoolMonitor = require('../src/newPoolMonitor');
+const pumpfunMonitor = require('../src/pumpfunMonitor');
 
 async function run() {
-  log.info('=== Ferreus smoke test ===\n');
+  log.info('=== Ferreus smoke test (v0.2.0) ===\n');
   let pass = 0, fail = 0;
   function check(name, ok, detail) {
     if (ok) { log.info(`✓ ${name}${detail ? ' — ' + detail : ''}`); pass++; }
@@ -33,8 +36,8 @@ async function run() {
   let database;
   try {
     database = db.init();
-    const tables = database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(r => r.name);
-    check('db schema created', tables.includes('arb_log') && tables.includes('settings'),
+    const tables = database.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(r => r.name);
+    check('db schema created', tables.includes('arb_log') && tables.includes('new_pools') && tables.includes('settings'),
       tables.join(','));
   } catch (e) {
     check('db schema created', false, e.message);
@@ -71,7 +74,6 @@ async function run() {
     await detector.refreshTokenList();
     check('detector refreshTokenList', detector.tokens.length > 0, `${detector.tokens.length} tokens`);
 
-    // Run one tick manually
     let found = 0;
     for (let i = 0; i < 10; i++) {
       found += await detector.tick();
@@ -81,7 +83,41 @@ async function run() {
     check('detector tick', false, e.message);
   }
 
-  // 6. safety gates
+  // 6. Solana RPC: getSignaturesForAddress on Raydium CPMM
+  try {
+    const sigs = await rpc.getSignaturesForAddress('CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C', { limit: 3 });
+    check('solana RPC getSignaturesForAddress', sigs && sigs.length > 0, `${sigs ? sigs.length : 0} sigs from Raydium CPMM`);
+  } catch (e) {
+    check('solana RPC', false, e.message);
+  }
+
+  // 7. new-pool monitor: single tick, count detected events
+  try {
+    safety.resume(); // make sure not paused from prior run
+    newPoolMonitor.attachDb(database);
+    const before = database.stmts.countNewPools.get().c;
+    await newPoolMonitor.tick();
+    const after = database.stmts.countNewPools.get().c;
+    const stats = newPoolMonitor.getStats();
+    check('new-pool monitor tick', true,
+      `${after - before} new events this tick, ${stats.sigsSeen} sigs seen total, ${stats.errors} errors`);
+  } catch (e) {
+    check('new-pool monitor', false, e.message);
+  }
+
+  // 8. pumpfun monitor: single tick
+  try {
+    pumpfunMonitor.attachDb(database);
+    const stats = pumpfunMonitor.getStats();
+    await pumpfunMonitor.tick();
+    const stats2 = pumpfunMonitor.getStats();
+    check('pumpfun monitor tick', true,
+      `${stats2.sigsSeen - stats.sigsSeen} sigs this tick, ${stats2.migrationEvents - stats.migrationEvents} migrations`);
+  } catch (e) {
+    check('pumpfun monitor', false, e.message);
+  }
+
+  // 9. safety gates
   check('safety guardDetect allowed', safety.guardDetect().allowed === true);
   check('safety guardTrade dryRun', safety.guardTrade().dryRun === true);
   safety.pause('smoke-test');

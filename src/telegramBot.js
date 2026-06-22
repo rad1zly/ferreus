@@ -10,7 +10,9 @@ let bot = null;
 let db = null;
 
 function create(database) {
-  db = database;
+  // Accept either the new shape {db, stmts} or the old shape (just db).
+  db = database.db || database;
+  dbStmts = database.stmts || null;
   if (!config.TELEGRAM_BOT_TOKEN) {
     log.warn('[telegram] no TELEGRAM_BOT_TOKEN, telegram bot disabled');
     return null;
@@ -26,6 +28,8 @@ function create(database) {
   registerCommands();
   return bot;
 }
+
+let dbStmts = null;
 
 function registerCommands() {
   bot.start(async (ctx) => {
@@ -52,14 +56,17 @@ function registerCommands() {
   });
 
   bot.command('status', async (ctx) => {
-    let dbStats = '?';
+    let arbStats = '?', npStats = '?';
     try {
-      const row = db.prepare('SELECT COUNT(*) AS c FROM arb_log').get();
+      const arbRow = db.prepare('SELECT COUNT(*) AS c FROM arb_log').get();
       const sinceMs = Date.now() - 24 * 3600 * 1000;
-      const recent = db.prepare('SELECT COUNT(*) AS c FROM arb_log WHERE ts >= ?').get(sinceMs);
-      dbStats = `${row.c} total / ${recent.c} in last 24h`;
+      const arbRecent = db.prepare('SELECT COUNT(*) AS c FROM arb_log WHERE ts >= ?').get(sinceMs);
+      arbStats = `${arbRow.c} total / ${arbRecent.c} in last 24h`;
+      const npRow = db.prepare('SELECT COUNT(*) AS c FROM new_pools').get();
+      const npRecent = db.prepare('SELECT COUNT(*) AS c FROM new_pools WHERE detected_at >= ?').get(sinceMs);
+      npStats = `${npRow.c} total / ${npRecent.c} in last 24h`;
     } catch (e) {
-      dbStats = `(error: ${e.message})`;
+      arbStats = `(error: ${e.message})`;
     }
     const txt = [
       `📊 <b>Ferreus Status</b>`,
@@ -67,8 +74,9 @@ function registerCommands() {
       `Mode: ${config.DRY_RUN ? '🧪 DRY_RUN' : '🔴 LIVE'}`,
       `Detector: ${safety.isPaused() ? '⏸️ PAUSED' : '▶️ RUNNING'}`,
       `Notifs sent: ${notifier.getCount()}`,
-      `Opportunities logged: ${dbStats}`,
-      `Poll: ${config.POLL_INTERVAL_MS}ms × ${config.SCAN_BATCH_SIZE}/tick`,
+      `DEX-DEX opps logged: ${arbStats}`,
+      `New-pool events logged: ${npStats}`,
+      `Poll: ${config.POLL_INTERVAL_MS}ms`,
       `Min gap: ${config.MIN_GAP_BPS} bps`,
       `Min TVL: $${config.MIN_TVL_USD.toLocaleString()}`,
       `Trade size: $${config.TRADE_SIZE_USD.toLocaleString()}`,
@@ -109,16 +117,38 @@ function registerCommands() {
     }
   });
 
+  bot.command('newpools', async (ctx) => {
+    try {
+      const rows = db.prepare(`
+        SELECT program, pattern, signature, slot, detected_at
+        FROM new_pools ORDER BY detected_at DESC LIMIT 5
+      `).all();
+      if (rows.length === 0) {
+        await ctx.reply('No new-pool events logged yet.');
+        return;
+      }
+      const lines = rows.map(r => {
+        const ago = Math.floor((Date.now() - r.detected_at) / 60000);
+        return `${ago}m ago — <b>${r.program}</b> pattern=${r.pattern} sig=${r.signature.slice(0,12)}…`;
+      });
+      await ctx.reply(['🆕 <b>Last 5 new-pool events:</b>', '', ...lines].join('\n'),
+        { parse_mode: 'HTML' });
+    } catch (e) {
+      await ctx.reply(`❌ ${e.message}`);
+    }
+  });
+
   bot.command('help', async (ctx) => {
     await ctx.reply([
       `🔥 <b>Ferreus — help</b>`,
       ``,
       `/start — main menu + status`,
-      `/status — detector status + DB stats`,
+      `/status — detector status + DB stats (arb + new-pool)`,
       `/ping — verify bot can reach you`,
       `/pause — pause detector`,
       `/resume — resume detector`,
       `/recent — show last 5 detected gaps`,
+      `/newpools — show last 5 new-pool events`,
       `/help — this help`,
     ].join('\n'), { parse_mode: 'HTML' });
   });

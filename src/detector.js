@@ -119,7 +119,8 @@ class Detector {
    * Persist opportunity to SQLite. Returns the inserted row id.
    */
   async logOpportunity(opp) {
-    const stmt = this.db.prepare(`
+    // Use prepared statement from db.stmts if available (new shape), else fallback
+    const stmt = this.db.stmts?.insertArbLog || this.db.prepare(`
       INSERT INTO arb_log
       (ts, token_mint, token_symbol, buy_dex, sell_dex, buy_price_usd, sell_price_usd,
        gap_bps, buy_liquidity_usd, sell_liquidity_usd, min_liquidity_usd, trade_size_usd,
