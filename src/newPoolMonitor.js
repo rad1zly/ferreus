@@ -55,7 +55,7 @@ class NewPoolMonitor {
       createEvents: 0,
       errors: 0,
     };
-    this.maxSigsPerProgramPerTick = 1; // public RPC rate-limit headroom
+    this.maxSigsPerProgramPerTick = 3; // Helius free tier: 50+ RPS OK, 3 sigs/tick = 24 RPC calls per tick
   }
 
   /**

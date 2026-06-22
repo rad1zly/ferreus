@@ -38,7 +38,7 @@ class PumpfunMonitor {
       migrationEvents: 0,
       errors: 0,
     };
-    this.maxSigsPerProgramPerTick = 1;
+    this.maxSigsPerProgramPerTick = 3;
   }
 
   attachDb(database) {
