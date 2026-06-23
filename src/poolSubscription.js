@@ -18,6 +18,7 @@ const log = require('./logger');
 const decoder = require('./poolDecoder');
 const config = require('./config');
 const arbDetector = require('./arbDetector');
+const vaultReader = require('./vaultReader');
 
 const DEFAULT_WSS = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com/';
 
@@ -61,6 +62,11 @@ class PoolSubscription {
     log.info(`[pool-watch] connecting to ${DEFAULT_WSS.slice(0, 50)}...`);
     this.connection = new Connection(DEFAULT_WSS, 'confirmed');
 
+    // Start vault reader for CPMM price data (Phase Pool-2.5)
+    if (config.VAULT_READER_ENABLED) {
+      vaultReader.start();
+    }
+
     // Subscribe to each program. Use legacy 4-arg signature for compatibility.
     for (const [name, info] of Object.entries(decoder.PROGRAMS)) {
       try {
@@ -103,6 +109,9 @@ class PoolSubscription {
     }
     this.subscriptions = [];
     await this._flushQueue();  // final flush
+    if (config.VAULT_READER_ENABLED) {
+      vaultReader.stop();
+    }
     log.info('[pool-watch] stopped');
   }
 
@@ -127,6 +136,26 @@ class PoolSubscription {
       this.stats.decoded++;
       this.stats.lastDecodedTs = Date.now();
 
+      // Register CPMM pool with vaultReader for price data
+      if (decoded.dex === 'raydium_cpmm' && decoded.vaultA && decoded.vaultB) {
+        vaultReader.addPool({
+          pubkey: accountId.toBase58(),
+          dex: decoded.dex,
+          vaultA: decoded.vaultA,
+          vaultB: decoded.vaultB,
+          mintA: decoded.mintA,
+          mintB: decoded.mintB,
+          decimalsA: decoded.decimalsA,
+          decimalsB: decoded.decimalsB,
+        });
+      }
+
+      // Compute CPMM price from vault balances if available
+      let priceForArb = decoded.priceNative;
+      if (!priceForArb && decoded.dex === 'raydium_cpmm') {
+        priceForArb = vaultReader.computePriceForPool(accountId.toBase58());
+      }
+
       // Queue DB write
       this._writeQueue.push({
         pubkey: accountId.toBase58(),
@@ -140,7 +169,7 @@ class PoolSubscription {
         reserve_a_native: null,  // requires vault balance read (Phase Pool-1.5)
         reserve_b_native: null,
         tvl_usd: null,
-        price_native: decoded.priceNative,
+        price_native: priceForArb,
         price_usd: null,         // requires USD reference (Phase Pool-2)
         fee_bps: decoded.feeBps,
         lp_supply: decoded.lpSupply || null,
@@ -160,7 +189,9 @@ class PoolSubscription {
           mintB: decoded.mintB,
           decimalsA: decoded.decimalsA,
           decimalsB: decoded.decimalsB,
-          priceNative: decoded.priceNative,
+          priceNative: priceForArb,
+          vaultA: decoded.vaultA,
+          vaultB: decoded.vaultB,
           ts: Date.now(),
         });
       } catch (e) {

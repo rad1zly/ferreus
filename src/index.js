@@ -9,8 +9,12 @@ const pumpfunMonitor = require('./pumpfunMonitor');
 const decoderWorker = require('./decoderWorker');
 const poolSubscription = require('./poolSubscription');
 const arbDetector = require('./arbDetector');
+const vaultReader = require('./vaultReader');
+const executor = require('./executor');
+const jitoClient = require('./jitoClient');
 const jitoTip = require('./jitoTip');
 const coingecko = require('./coingecko');
+const priceOracle = require('./priceOracle');
 const telegramBot = require('./telegramBot');
 const notifier = require('./notifier');
 const safety = require('./safety');
@@ -56,6 +60,12 @@ async function main() {
 
   // Pre-load decimals for arb detector (covers Orca Whirlpool which doesn't store decimals on-chain)
   arbDetector.setDecimalsBulk(detector.tokens);
+
+  // Phase Pool-3: attach executor to DB
+  executor.attachDb(database);
+  if (config.LIVE_EXECUTE && config.WALLET_PRIVATE_KEY) {
+    try { jitoClient.loadWallet(); } catch (e) { log.warn(`[main] wallet load failed: ${e.message}`); }
+  }
 
   // Hook notifier into logOpportunity
   const origLog = detector.logOpportunity.bind(detector);
@@ -109,11 +119,10 @@ async function main() {
       arbDetector.start();
     }
   }
-
-  // --- Auxiliary signals (CoinGecko trending, Jito tip floor) ---
-  // CoinGecko: refresh every 5 min — slow signal, mostly informational
-  let lastTrendingRefresh = 0;
   const TRENDING_REFRESH_MS = 5 * 60 * 1000;
+  let lastTrendingRefresh = 0;
+  let lastPriceRefresh = 0;
+  let lastArbProcess = 0;
 
   // Jito tip: refresh every 60s (cached internally), show at startup
   const initialTip = await jitoTip.getTipFloor();
@@ -190,6 +199,8 @@ async function main() {
         const pfStats = hasC ? pumpfunMonitor.getStats() : null;
         const poolStats = hasD ? poolSubscription.getStats() : null;
         const arbStats = (hasD && hasE) ? arbDetector.getStats() : null;
+        const vaultStats = (hasD && config.VAULT_READER_ENABLED) ? vaultReader.getStats() : null;
+        const execStats = (hasD && hasE) ? executor.getStats() : null;
         let msg = `📊 ${Math.round((Date.now() - startTs) / 60000)}min uptime\n` +
           `Detector A (DEX-DEX): ${totalOpps} opps`;
         if (npStats) {
@@ -204,8 +215,50 @@ async function main() {
         if (arbStats) {
           msg += `\nDetector E (pool-arb): ${arbStats.gapsLogged} arbs logged, ${arbStats.pairsTracked} pairs tracked`;
         }
+        if (vaultStats && vaultStats.poolsTracked > 0) {
+          msg += `\nVault reader: ${vaultStats.vaultsCached}/${vaultStats.vaultsTracked} cached, ${vaultStats.refreshes} refreshes`;
+        }
+        if (execStats && (execStats.simulated + execStats.submitted + execStats.failed) > 0) {
+          msg += `\nExecutor: ${execStats.simulated} sim, ${execStats.failed} fail, est profit=$${execStats.totalProjectedProfitUsd.toFixed(2)}`;
+        }
         await notifier.info(msg);
         lastStatsNotif = Date.now();
+      }
+
+      // --- Pool-2.6: USD price refresh (every 60s) ---
+      if (Date.now() - lastPriceRefresh > 60000) {
+        try {
+          const usdPrices = await priceOracle.getPriceUsdBulk([
+            'So11111111111111111111111111111111111111112',  // wSOL
+            'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+            'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+          ]);
+          arbDetector.setUsdPriceCache(usdPrices);
+          lastPriceRefresh = Date.now();
+        } catch (e) {
+          log.warn(`[main] USD price refresh: ${e.message}`);
+        }
+      }
+
+      // --- Pool-3: process new arbs (every 5s) ---
+      if (Date.now() - lastArbProcess > 5000 && config.EXECUTION_ENABLED) {
+        try {
+          // Find arbs that haven't been executed yet
+          const newArbs = database.db.prepare(`
+            SELECT * FROM arb_candidates
+            WHERE executed = 0
+            ORDER BY ts DESC LIMIT 10
+          `).all();
+          for (const arb of newArbs) {
+            // safety guard
+            const guard = safety.guardTrade({ usd: config.ARB_TRADE_SIZE_USDC });
+            if (!guard.allowed) continue;
+            await executor.execute(arb);
+          }
+          lastArbProcess = Date.now();
+        } catch (e) {
+          log.warn(`[main] arb processing: ${e.message}`);
+        }
       }
     } catch (e) {
       log.error(`[main] loop error: ${e.message}`);

@@ -15,6 +15,15 @@ class JupiterClient {
     this.tokenCache = null;
     this.tokenCacheTs = 0;
     this.cacheTtlMs = 3600000; // 1h
+    this._lastQuoteTs = 0;
+    this._quoteMinInterval = 300;  // 3.3 RPS — Jupiter public API limit
+  }
+
+  async _throttleQuote() {
+    const now = Date.now();
+    const wait = this._quoteMinInterval - (now - this._lastQuoteTs);
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    this._lastQuoteTs = Date.now();
   }
 
   /**
@@ -48,6 +57,7 @@ class JupiterClient {
    * amount is in raw token units (e.g. lamports for SOL).
    */
   async getQuote({ inputMint, outputMint, amount, slippageBps = 50 }) {
+    await this._throttleQuote();
     try {
       const res = await axios.get(JUPITER_QUOTE, {
         params: { inputMint, outputMint, amount, slippageBps },

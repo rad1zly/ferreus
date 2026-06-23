@@ -60,6 +60,25 @@ module.exports = {
   // Cross-DEX arb detector (Phase Pool-2)
   ARB_MIN_GAP_BPS: envInt('ARB_MIN_GAP_BPS', 30),        // 0.3% default
   ARB_COOLDOWN_MS: envInt('ARB_COOLDOWN_MS', 60000),     // 1 min per pair
+  ARB_MIN_TVL_USD: envInt('ARB_MIN_TVL_USD', 0),         // 0 = disabled (no filter)
+  ARB_TRADE_SIZE_USDC: envInt('ARB_TRADE_SIZE_USDC', 100),  // notional per arb test
+  ARB_MAX_SLIPPAGE_BPS: envInt('ARB_MAX_SLIPPAGE_BPS', 50),
+  ARB_MIN_PROFIT_USD: envInt('ARB_MIN_PROFIT_USD', 0),  // min projected profit to execute
+
+  // Vault reader (Pool-2.5)
+  VAULT_READER_ENABLED: envBool('VAULT_READER_ENABLED', true),
+  VAULT_REFRESH_MS: envInt('VAULT_REFRESH_MS', 10000),
+
+  // Execution (Pool-3+)
+  EXECUTION_ENABLED: envBool('EXECUTION_ENABLED', false),  // master switch (off by default)
+  WALLET_PRIVATE_KEY: envString('WALLET_PRIVATE_KEY'),     // base58 or B64: prefix
+  JITO_TIP_LAMPORTS: envInt('JITO_TIP_LAMPORTS', 10000),   // 0.00001 SOL default
+  JITO_BLOCK_ENGINE_URL: envString('JITO_BLOCK_ENGINE_URL', 'https://mainnet.block-engine.jito.wtf/api/v1/bundles'),
+  PRIORITY_FEE_LAMPORTS: envInt('PRIORITY_FEE_LAMPORTS', 1000),  // 0.000001 SOL
+
+  // Live mode (Pool-5) — explicit override of DRY_RUN for trade execution only
+  // Pool-3 runs in DRY_RUN mode by default (logs projected PnL, no tx)
+  LIVE_EXECUTE: envBool('LIVE_EXECUTE', false),
   ARB_MIN_DECIMALS_OK: envBool('ARB_MIN_DECIMALS_OK', true),
 
   // Storage

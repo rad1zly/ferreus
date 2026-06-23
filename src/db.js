@@ -174,6 +174,47 @@ function init() {
     CREATE INDEX IF NOT EXISTS idx_arb_candidates_ts ON arb_candidates(ts);
     CREATE INDEX IF NOT EXISTS idx_arb_candidates_pair ON arb_candidates(pair_key);
     CREATE INDEX IF NOT EXISTS idx_arb_candidates_gap ON arb_candidates(gap_bps);
+
+    -- Pool-2.7: extend arb_candidates with TVL fields (idempotent ALTER)
+    -- (cheap_tvl_usd, expensive_tvl_usd already added above? no — addCol needs column check)
+    -- The simpler approach: just add the columns if missing
+  `);
+  // Idempotent ALTER for arb_candidates TVL columns
+  const arbCols = db.prepare("PRAGMA table_info(arb_candidates)").all();
+  const arbColNames = new Set(arbCols.map(c => c.name));
+  if (!arbColNames.has('cheap_tvl_usd')) db.exec('ALTER TABLE arb_candidates ADD COLUMN cheap_tvl_usd REAL');
+  if (!arbColNames.has('expensive_tvl_usd')) db.exec('ALTER TABLE arb_candidates ADD COLUMN expensive_tvl_usd REAL');
+  if (!arbColNames.has('executed')) db.exec('ALTER TABLE arb_candidates ADD COLUMN executed INTEGER DEFAULT 0');
+  if (!arbColNames.has('trade_id')) db.exec('ALTER TABLE arb_candidates ADD COLUMN trade_id INTEGER');
+
+  // Pool-3: trade log (per execution attempt)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS trade_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts INTEGER NOT NULL,
+      arb_id INTEGER,
+      mode TEXT NOT NULL,                  -- 'dry_run' | 'live'
+      status TEXT NOT NULL,                -- 'simulated' | 'submitted' | 'confirmed' | 'failed' | 'skipped'
+      mint_in TEXT NOT NULL,               -- input mint (typically USDC)
+      mint_out TEXT NOT NULL,              -- output mint (USDC after round-trip)
+      amount_in_raw TEXT NOT NULL,         -- input amount in raw units
+      amount_out_raw TEXT,                 -- output amount in raw units
+      amount_in_usd REAL,
+      amount_out_usd REAL,
+      gross_profit_usd REAL,
+      jito_tip_lamports INTEGER,
+      priority_fee_lamports INTEGER,
+      gas_lamports INTEGER,
+      net_profit_usd REAL,
+      net_profit_sol REAL,
+      tx_signature TEXT,
+      error_msg TEXT,
+      quote_json TEXT,
+      raw_json TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_trade_log_ts ON trade_log(ts);
+    CREATE INDEX IF NOT EXISTS idx_trade_log_status ON trade_log(status);
+    CREATE INDEX IF NOT EXISTS idx_trade_log_arb ON trade_log(arb_id);
   `);
 
   // Prepared statements (per snipetrench pattern — pre-compile for speed)
@@ -254,15 +295,35 @@ function init() {
     insertArbCandidate: db.prepare(`
       INSERT INTO arb_candidates (
         ts, pair_key, mint0, mint1,
-        cheap_dex, cheap_price, cheap_pool,
-        expensive_dex, expensive_price, expensive_pool,
+        cheap_dex, cheap_price, cheap_pool, cheap_tvl_usd,
+        expensive_dex, expensive_price, expensive_pool, expensive_tvl_usd,
         gap_bps
       ) VALUES (
         @ts, @pair_key, @mint0, @mint1,
-        @cheap_dex, @cheap_price, @cheap_pool,
-        @expensive_dex, @expensive_price, @expensive_pool,
+        @cheap_dex, @cheap_price, @cheap_pool, @cheap_tvl_usd,
+        @expensive_dex, @expensive_price, @expensive_pool, @expensive_tvl_usd,
         @gap_bps
       )
+    `),
+    insertTradeLog: db.prepare(`
+      INSERT INTO trade_log (
+        ts, arb_id, mode, status,
+        mint_in, mint_out, amount_in_raw, amount_out_raw,
+        amount_in_usd, amount_out_usd, gross_profit_usd,
+        jito_tip_lamports, priority_fee_lamports, gas_lamports,
+        net_profit_usd, net_profit_sol,
+        tx_signature, error_msg, quote_json, raw_json
+      ) VALUES (
+        @ts, @arb_id, @mode, @status,
+        @mint_in, @mint_out, @amount_in_raw, @amount_out_raw,
+        @amount_in_usd, @amount_out_usd, @gross_profit_usd,
+        @jito_tip_lamports, @priority_fee_lamports, @gas_lamports,
+        @net_profit_usd, @net_profit_sol,
+        @tx_signature, @error_msg, @quote_json, @raw_json
+      )
+    `),
+    markArbExecuted: db.prepare(`
+      UPDATE arb_candidates SET executed = 1, trade_id = @trade_id WHERE id = @arb_id
     `),
     countArbCandidates: db.prepare(`SELECT COUNT(*) AS c FROM arb_candidates`),
     recentArbCandidates: db.prepare(`SELECT * FROM arb_candidates ORDER BY ts DESC LIMIT ?`),
