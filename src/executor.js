@@ -3,8 +3,8 @@
 /**
  * Trade executor — Phase Pool-3.
  *
- * For each arb candidate, take a Jupiter round-trip quote (USDC → tokenB → USDC)
- * to estimate the realized profit. Log projected PnL to trade_log.
+ * For each arb candidate, do a Jupiter round-trip quote (SOL → tokenB → SOL)
+ * to estimate the realized profit in SOL.
  *
  * v0 mode: DRY_RUN only. Logs every execution attempt as 'simulated'.
  * v5 mode: LIVE_EXECUTE=true + WALLET_PRIVATE_KEY set. Builds + signs + submits
@@ -18,12 +18,14 @@
  * - Atomic (single tx, no sandwich risk)
  * - Free public API
  *
- * Trade size: configurable via ARB_TRADE_SIZE_USDC (default 100 USDC). For
- * Jupiter round-trip, we use USDC as the entry/exit token (deep liquidity).
+ * Trade size: configurable via ARB_TRADE_SIZE_SOL (default 0.01 SOL).
+ * Input/output: SOL (WSOL). For USDC/SOL pair, round-trip is SOL → USDC → SOL.
+ * The intermediate is the OTHER side of the pair (mint0 = the smaller mint).
  *
  * Profit calc:
- *   gross_profit_usd = amount_out_usd - amount_in_usd
- *   net_profit_usd = gross_profit_usd - gas_usd - jito_tip_usd
+ *   gross_profit_sol = amount_out_sol - amount_in_sol
+ *   net_profit_sol = gross_profit_sol - (jito_tip_sol + gas_sol)
+ *   net_profit_usd = net_profit_sol × sol_usd
  *
  * Safety guards (from safety.guardTrade):
  * - DRY_RUN: log only, no tx
@@ -36,11 +38,10 @@ const log = require('./logger');
 const config = require('./config');
 const jupiter = require('./jupiterClient');
 const priceOracle = require('./priceOracle');
-const jitoTip = require('./jitoTip');
 
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
-const USDC_DECIMALS = 6;
+const WSOL_DECIMALS = 9;
 
 // Estimated gas in lamports (per tx). Solana base fee 5000 + priority fee
 // + compute units. Conservative estimate.
@@ -55,8 +56,11 @@ class Executor {
       confirmed: 0,
       failed: 0,
       skipped: 0,
-      totalProjectedProfitUsd: 0,
-      realizedProfitUsd: 0,
+      totalGrossProfitSol: 0,
+      totalNetProfitSol: 0,
+      totalGrossProfitUsd: 0,
+      totalNetProfitUsd: 0,
+      totalRoundTripsExecuted: 0,
     };
     this._recentExecs = new Map();  // arbId -> ts, to avoid double-execution
   }
@@ -68,11 +72,11 @@ class Executor {
   /**
    * Execute an arb candidate. Returns trade_id (or null if skipped).
    * @param {Object} arb - { id, pairKey, mint0, mint1, cheapDex, expensiveDex, gapBps, ... }
-   * @param {Object} opts - { tradeSizeUsd, slippageBps, forceLive }
+   * @param {Object} opts - { tradeSizeSol, slippageBps, forceLive }
    */
   async execute(arb, opts = {}) {
     if (!arb) return null;
-    const tradeSize = opts.tradeSizeUsd ?? config.ARB_TRADE_SIZE_USDC;
+    const tradeSizeSol = opts.tradeSizeSol ?? config.ARB_TRADE_SIZE_SOL;
     const slippageBps = opts.slippageBps ?? config.ARB_MAX_SLIPPAGE_BPS;
 
     // Skip if already executed recently (per arb_id, 5 min cooldown)
@@ -82,95 +86,118 @@ class Executor {
       return null;
     }
 
-    // The intermediate token is the one we want to buy cheap, sell expensive.
-    // Use mint1 (the larger mint) as the intermediate by convention; this works
-    // for the most common case (USDC is mint0, tokenB is mint1).
-    const intermediateMint = arb.mint1;
+    // SOL → mint0 (intermediate, the smaller mint) → SOL
+    // For USDC/SOL pair: SOL → USDC → SOL
+    // For SOL/BONK pair: SOL → BONK → SOL
+    // For SOL/JUP pair: SOL → JUP → SOL
+    // (mint0 is always the "other side" since SOL is rarely the smaller mint)
+    const intermediateMint = arb.mint0;
 
-    // Round-trip: USDC → intermediate → USDC
-    const amountInRaw = Math.floor(tradeSize * Math.pow(10, USDC_DECIMALS));  // 100 USDC = 100_000_000
-    const amountInUi = tradeSize;  // human-readable USD (since USDC ≈ USD)
+    // Sanity: intermediate shouldn't be SOL (would be no-op round-trip)
+    if (intermediateMint === WSOL_MINT) {
+      // Pair doesn't have a non-SOL side. Skip — the bot detected an
+      // arb on a SOL-paired pool but the round-trip would be a no-op.
+      return null;
+    }
+
+    // Round-trip: SOL → intermediate → SOL
+    const amountInLamports = Math.floor(tradeSizeSol * 1e9);  // 0.01 SOL = 10_000_000
+    const amountInSol = tradeSizeSol;
 
     try {
-      // Step 1: USDC → intermediate
+      // Step 1: SOL → intermediate
       const quote1 = await jupiter.getQuote({
-        inputMint: USDC_MINT,
+        inputMint: WSOL_MINT,
         outputMint: intermediateMint,
-        amount: amountInRaw,
+        amount: amountInLamports,
         slippageBps,
       });
       if (!quote1 || !quote1.outAmount) {
-        this._logTrade({ arb, mode: this._mode(), status: 'skipped', mintIn: USDC_MINT, mintOut: intermediateMint, amountInRaw, amountInUi, errorMsg: 'quote1 failed' });
+        this._logTrade({ arb, mode: this._mode(), status: 'skipped', mintIn: WSOL_MINT, mintOut: intermediateMint, amountInLamports, amountInSol, errorMsg: 'quote1 failed' });
         return null;
       }
 
-      // Step 2: intermediate → USDC
+      // Step 2: intermediate → SOL
       const quote2 = await jupiter.getQuote({
         inputMint: intermediateMint,
-        outputMint: USDC_MINT,
+        outputMint: WSOL_MINT,
         amount: quote1.outAmount,
         slippageBps,
       });
       if (!quote2 || !quote2.outAmount) {
-        this._logTrade({ arb, mode: this._mode(), status: 'skipped', mintIn: intermediateMint, mintOut: USDC_MINT, amountInRaw: quote1.outAmount, errorMsg: 'quote2 failed' });
+        this._logTrade({ arb, mode: this._mode(), status: 'skipped', mintIn: intermediateMint, mintOut: WSOL_MINT, amountInLamports: quote1.outAmount, errorMsg: 'quote2 failed' });
         return null;
       }
 
-      // Compute PnL
-      const amountOutRaw = quote2.outAmount;
-      const amountOutUi = Number(amountOutRaw) / Math.pow(10, USDC_DECIMALS);
-      const grossProfitUsd = amountOutUi - amountInUi;
+      // Compute PnL in SOL (and USD for reference)
+      const amountOutLamports = Number(quote2.outAmount);
+      const amountOutSol = amountOutLamports / 1e9;
+      const grossProfitSol = amountOutSol - amountInSol;
+      const jitoTipSol = config.JITO_TIP_LAMPORTS / 1e9;
+      const gasSol = ESTIMATED_GAS_LAMPORTS / 1e9;
+      const netProfitSol = grossProfitSol - jitoTipSol - gasSol;
       const solUsd = priceOracle.cache.get(WSOL_MINT)?.priceUsd || 0;
-      const jitoTipUsd = (config.JITO_TIP_LAMPORTS / 1e9) * solUsd;
-      const gasUsd = (ESTIMATED_GAS_LAMPORTS / 1e9) * solUsd;
-      const netProfitUsd = grossProfitUsd - jitoTipUsd - gasUsd;
-      const netProfitSol = solUsd > 0 ? netProfitUsd / solUsd : 0;
+      const grossProfitUsd = grossProfitSol * solUsd;
+      const netProfitUsd = netProfitSol * solUsd;
+      const amountInUsd = amountInSol * solUsd;
+      const amountOutUsd = amountOutSol * solUsd;
+      const netRoiPct = (netProfitSol / amountInSol) * 100;
 
       this._recentExecs.set(arb.id, Date.now());
+      this.stats.totalRoundTripsExecuted++;
 
       // If profit is too low, skip execution but log the simulation
-      if (grossProfitUsd < config.ARB_MIN_PROFIT_USD) {
+      const minProfitSol = config.ARB_MIN_PROFIT_SOL || 0;
+      const minProfitUsd = config.ARB_MIN_PROFIT_USD || 0;
+      if (grossProfitSol < minProfitSol || (minProfitUsd > 0 && grossProfitUsd < minProfitUsd)) {
         this.stats.skipped++;
         const tradeId = this._logTrade({
           arb, mode: this._mode(), status: 'skipped',
-          mintIn: USDC_MINT, mintOut: USDC_MINT,
-          amountInRaw, amountInUi, amountOutRaw, amountOutUi,
-          grossProfitUsd, jitoTipUsd, gasUsd, netProfitUsd, netProfitSol,
+          mintIn: WSOL_MINT, mintOut: WSOL_MINT,
+          amountInLamports, amountInSol, amountOutLamports, amountOutSol,
+          amountInUsd, amountOutUsd, grossProfitSol, grossProfitUsd, netProfitSol, netProfitUsd,
+          jitoTipSol, gasSol, solUsd, netRoiPct,
           quoteJson: JSON.stringify({ q1: quote1, q2: quote2 }),
         });
         log.info(
           `[exec] SKIP arb#${arb.id} ${arb.cheapDex}→${arb.expensiveDex} ` +
-          `| in=${amountInUi.toFixed(2)} USDC out=${amountOutUi.toFixed(2)} ` +
-          `| profit=${grossProfitUsd.toFixed(3)} USD (below threshold)`
+          `| ${amountInSol.toFixed(6)}→${amountOutSol.toFixed(6)} SOL ` +
+          `(gross ${grossProfitSol >= 0 ? '+' : ''}${grossProfitSol.toFixed(6)} SOL, ` +
+          `net ${netRoiPct.toFixed(2)}%)`
         );
         return tradeId;
       }
 
       // If LIVE_EXECUTE is on, actually execute
       if (config.LIVE_EXECUTE && config.WALLET_PRIVATE_KEY) {
-        return await this._executeLive(arb, quote1, quote2, amountInUi, amountOutUi, grossProfitUsd, netProfitUsd, netProfitSol);
+        return await this._executeLive(arb, quote1, quote2, amountInSol, amountOutSol, grossProfitSol, grossProfitUsd, netProfitSol, netProfitUsd, solUsd, netRoiPct);
       }
 
       // Otherwise simulate only
       this.stats.simulated++;
-      this.stats.totalProjectedProfitUsd += grossProfitUsd;
+      this.stats.totalGrossProfitSol += grossProfitSol;
+      this.stats.totalNetProfitSol += netProfitSol;
+      this.stats.totalGrossProfitUsd += grossProfitUsd;
+      this.stats.totalNetProfitUsd += netProfitUsd;
       const tradeId = this._logTrade({
         arb, mode: 'dry_run', status: 'simulated',
-        mintIn: USDC_MINT, mintOut: USDC_MINT,
-        amountInRaw, amountInUi, amountOutRaw, amountOutUi,
-        grossProfitUsd, jitoTipUsd, gasUsd, netProfitUsd, netProfitSol,
+        mintIn: WSOL_MINT, mintOut: WSOL_MINT,
+        amountInLamports, amountInSol, amountOutLamports, amountOutSol,
+        amountInUsd, amountOutUsd, grossProfitSol, grossProfitUsd, netProfitSol, netProfitUsd,
+        jitoTipSol, gasSol, solUsd, netRoiPct,
         quoteJson: JSON.stringify({ q1: quote1, q2: quote2 }),
       });
       log.info(
         `💰 ARB #${tradeId || arb.id} ${arb.cheapDex}→${arb.expensiveDex} ` +
-        `| in=${amountInUi.toFixed(2)} → out=${amountOutUi.toFixed(2)} USDC ` +
-        `| profit=$${grossProfitUsd.toFixed(3)} (net=$${netProfitUsd.toFixed(3)}) ` +
-        `| ${this._mode()}`
+        `| ${amountInSol.toFixed(6)}→${amountOutSol.toFixed(6)} SOL ` +
+        `| gross ${grossProfitSol >= 0 ? '+' : ''}${grossProfitSol.toFixed(6)} SOL ($${grossProfitUsd.toFixed(4)}) ` +
+        `| net ${netProfitSol >= 0 ? '+' : ''}${netProfitSol.toFixed(6)} SOL ($${netProfitUsd.toFixed(4)}) ` +
+        `| ROI ${netRoiPct.toFixed(2)}%`
       );
       return tradeId;
     } catch (e) {
       this.stats.failed++;
-      this._logTrade({ arb, mode: this._mode(), status: 'failed', mintIn: USDC_MINT, mintOut: USDC_MINT, amountInRaw, amountInUi, errorMsg: e.message });
+      this._logTrade({ arb, mode: this._mode(), status: 'failed', mintIn: WSOL_MINT, mintOut: WSOL_MINT, amountInLamports, amountInSol, errorMsg: e.message });
       log.warn(`[exec] failed for arb#${arb.id}: ${e.message}`);
       return null;
     }
@@ -189,18 +216,20 @@ class Executor {
    * 5. Wait for confirmation
    * 6. Log to trade_log with tx_signature
    */
-  async _executeLive(arb, quote1, quote2, amountInUi, amountOutUi, grossProfitUsd, netProfitUsd, netProfitSol) {
+  async _executeLive(arb, quote1, quote2, amountInSol, amountOutSol, grossProfitSol, grossProfitUsd, netProfitSol, netProfitUsd, solUsd, netRoiPct) {
     // STUB: real implementation in Pool-5
-    // For now, log the intent and treat as simulated
     log.warn(`[exec] LIVE_EXECUTE=true but live execution not yet implemented (Pool-5 stub). Logging as simulated.`);
     this.stats.simulated++;
-    this.stats.totalProjectedProfitUsd += grossProfitUsd;
+    this.stats.totalGrossProfitSol += grossProfitSol;
+    this.stats.totalNetProfitSol += netProfitSol;
     const tradeId = this._logTrade({
-      arb, mode: 'live', status: 'simulated',  // not 'submitted' since we're not actually submitting yet
-      mintIn: USDC_MINT, mintOut: USDC_MINT,
-      amountInRaw: String(Math.floor(amountInUi * 1e6)),
-      amountInUi, amountOutRaw: String(Math.floor(amountOutUi * 1e6)), amountOutUi,
-      grossProfitUsd, netProfitUsd, netProfitSol,
+      arb, mode: 'live', status: 'simulated',
+      mintIn: WSOL_MINT, mintOut: WSOL_MINT,
+      amountInLamports: String(Math.floor(amountInSol * 1e9)),
+      amountInSol, amountOutLamports: String(Math.floor(amountOutSol * 1e9)), amountOutSol,
+      grossProfitSol, grossProfitUsd, netProfitSol, netProfitUsd,
+      jitoTipSol: config.JITO_TIP_LAMPORTS / 1e9, gasSol: ESTIMATED_GAS_LAMPORTS / 1e9,
+      solUsd, netRoiPct,
       errorMsg: 'live execution not yet implemented (Pool-5 stub)',
     });
     return tradeId;
@@ -220,16 +249,23 @@ class Executor {
         status: t.status || 'simulated',
         mint_in: t.mintIn,
         mint_out: t.mintOut,
-        amount_in_raw: t.amountInRaw || '0',
-        amount_out_raw: t.amountOutRaw || null,
-        amount_in_usd: t.amountInUi || null,
-        amount_out_usd: t.amountOutUi || null,
-        gross_profit_usd: t.grossProfitUsd || null,
+        amount_in_raw: t.amountInLamports != null ? String(t.amountInLamports) : '0',
+        amount_out_raw: t.amountOutLamports != null ? String(t.amountOutLamports) : null,
+        amount_in_sol: t.amountInSol ?? null,
+        amount_out_sol: t.amountOutSol ?? null,
+        amount_in_usd: t.amountInUsd ?? null,
+        amount_out_usd: t.amountOutUsd ?? null,
+        gross_profit_sol: t.grossProfitSol ?? null,
+        gross_profit_usd: t.grossProfitUsd ?? null,
+        net_profit_sol: t.netProfitSol ?? null,
+        net_profit_usd: t.netProfitUsd ?? null,
         jito_tip_lamports: config.JITO_TIP_LAMPORTS,
+        jito_tip_sol: t.jitoTipSol ?? null,
         priority_fee_lamports: config.PRIORITY_FEE_LAMPORTS,
         gas_lamports: ESTIMATED_GAS_LAMPORTS,
-        net_profit_usd: t.netProfitUsd || null,
-        net_profit_sol: t.netProfitSol || null,
+        gas_sol: t.gasSol ?? null,
+        sol_usd_at_exec: t.solUsd ?? null,
+        net_roi_pct: t.netRoiPct ?? null,
         tx_signature: null,
         error_msg: t.errorMsg || null,
         quote_json: t.quoteJson || null,

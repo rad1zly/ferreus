@@ -16,14 +16,37 @@ class JupiterClient {
     this.tokenCacheTs = 0;
     this.cacheTtlMs = 3600000; // 1h
     this._lastQuoteTs = 0;
-    this._quoteMinInterval = 300;  // 3.3 RPS — Jupiter public API limit
+    this._quoteMinInterval = 1000;  // 1 RPS — conservative for public API
+    this._consecRateLimit = 0;
+    this._backoffMs = 0;
+    this.stats = {
+      quotes: 0,
+      success: 0,
+      rateLimits: 0,
+      retries: 0,
+      lastError: null,
+    };
   }
 
   async _throttleQuote() {
     const now = Date.now();
-    const wait = this._quoteMinInterval - (now - this._lastQuoteTs);
+    const elapsed = now - this._lastQuoteTs;
+    // Dynamic backoff: 2x after each 429, capped at 30s
+    const dynamicMin = Math.min(this._quoteMinInterval * Math.pow(2, this._consecRateLimit), 30000);
+    const wait = Math.max(dynamicMin - elapsed, 0);
     if (wait > 0) await new Promise(r => setTimeout(r, wait));
     this._lastQuoteTs = Date.now();
+  }
+
+  _noteSuccess() {
+    this._consecRateLimit = 0;
+    this._backoffMs = 0;
+  }
+
+  _noteRateLimit() {
+    this._consecRateLimit++;
+    this._backoffMs = Math.min(this._quoteMinInterval * Math.pow(2, this._consecRateLimit), 30000);
+    this.stats.rateLimits++;
   }
 
   /**
@@ -55,22 +78,45 @@ class JupiterClient {
   /**
    * Get a quote. Returns Jupiter quote object or null on error.
    * amount is in raw token units (e.g. lamports for SOL).
+   * Retries up to 3 times on 429 with exponential backoff.
    */
-  async getQuote({ inputMint, outputMint, amount, slippageBps = 50 }) {
-    await this._throttleQuote();
-    try {
-      const res = await axios.get(JUPITER_QUOTE, {
-        params: { inputMint, outputMint, amount, slippageBps },
-        timeout: 10000,
-      });
-      if (!res.data || res.data.error) {
+  async getQuote({ inputMint, outputMint, amount, slippageBps = 50 }, opts = {}) {
+    const maxRetries = opts.maxRetries ?? 3;
+    this.stats.quotes++;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      await this._throttleQuote();
+      try {
+        const res = await axios.get(JUPITER_QUOTE, {
+          params: { inputMint, outputMint, amount, slippageBps },
+          timeout: 10000,
+        });
+        if (!res.data || res.data.error) {
+          this._noteSuccess();  // got a response, just no route
+          return null;
+        }
+        this._noteSuccess();
+        this.stats.success++;
+        return res.data;
+      } catch (e) {
+        const is429 = e.response && e.response.status === 429;
+        const isTimeout = e.code === 'ECONNABORTED' || e.code === 'ETIMEDOUT';
+        if ((is429 || isTimeout) && attempt < maxRetries) {
+          this._noteRateLimit();
+          this.stats.retries++;
+          const backoff = is429
+            ? this._backoffMs
+            : Math.min(1000 * Math.pow(2, attempt), 10000);
+          log.warn(`[jupiter] ${is429 ? '429' : 'timeout'} on attempt ${attempt+1}/${maxRetries+1}, backing off ${backoff}ms`);
+          await new Promise(r => setTimeout(r, backoff));
+          continue;
+        }
+        this.stats.lastError = e.message;
+        log.warn(`[jupiter] quote failed: ${e.message}`);
         return null;
       }
-      return res.data;
-    } catch (e) {
-      log.warn(`[jupiter] quote failed: ${e.message}`);
-      return null;
     }
+    return null;
   }
 }
 

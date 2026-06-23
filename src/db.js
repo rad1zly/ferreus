@@ -187,7 +187,7 @@ function init() {
   if (!arbColNames.has('executed')) db.exec('ALTER TABLE arb_candidates ADD COLUMN executed INTEGER DEFAULT 0');
   if (!arbColNames.has('trade_id')) db.exec('ALTER TABLE arb_candidates ADD COLUMN trade_id INTEGER');
 
-  // Pool-3: trade log (per execution attempt)
+  // Pool-3: trade log (per execution attempt) — SOL-based (Pool-5 final)
   db.exec(`
     CREATE TABLE IF NOT EXISTS trade_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -195,18 +195,25 @@ function init() {
       arb_id INTEGER,
       mode TEXT NOT NULL,                  -- 'dry_run' | 'live'
       status TEXT NOT NULL,                -- 'simulated' | 'submitted' | 'confirmed' | 'failed' | 'skipped'
-      mint_in TEXT NOT NULL,               -- input mint (typically USDC)
-      mint_out TEXT NOT NULL,              -- output mint (USDC after round-trip)
-      amount_in_raw TEXT NOT NULL,         -- input amount in raw units
+      mint_in TEXT NOT NULL,               -- input mint (WSOL for SOL-based arb)
+      mint_out TEXT NOT NULL,              -- output mint (WSOL after round-trip)
+      amount_in_raw TEXT NOT NULL,         -- input amount in raw units (lamports for SOL)
       amount_out_raw TEXT,                 -- output amount in raw units
+      amount_in_sol REAL,                  -- human-readable input (SOL)
+      amount_out_sol REAL,                 -- human-readable output (SOL)
       amount_in_usd REAL,
       amount_out_usd REAL,
+      gross_profit_sol REAL,               -- SOL-denominated profit (BEFORE fees)
       gross_profit_usd REAL,
+      net_profit_sol REAL,                 -- SOL-denominated profit (AFTER tip + gas)
+      net_profit_usd REAL,
       jito_tip_lamports INTEGER,
+      jito_tip_sol REAL,
       priority_fee_lamports INTEGER,
       gas_lamports INTEGER,
-      net_profit_usd REAL,
-      net_profit_sol REAL,
+      gas_sol REAL,
+      sol_usd_at_exec REAL,                -- SOL/USD price at execution time
+      net_roi_pct REAL,                    -- (net_profit_sol / amount_in_sol) * 100
       tx_signature TEXT,
       error_msg TEXT,
       quote_json TEXT,
@@ -309,16 +316,18 @@ function init() {
       INSERT INTO trade_log (
         ts, arb_id, mode, status,
         mint_in, mint_out, amount_in_raw, amount_out_raw,
-        amount_in_usd, amount_out_usd, gross_profit_usd,
-        jito_tip_lamports, priority_fee_lamports, gas_lamports,
-        net_profit_usd, net_profit_sol,
+        amount_in_sol, amount_out_sol, amount_in_usd, amount_out_usd,
+        gross_profit_sol, gross_profit_usd, net_profit_sol, net_profit_usd,
+        jito_tip_lamports, jito_tip_sol, priority_fee_lamports, gas_lamports, gas_sol,
+        sol_usd_at_exec, net_roi_pct,
         tx_signature, error_msg, quote_json, raw_json
       ) VALUES (
         @ts, @arb_id, @mode, @status,
         @mint_in, @mint_out, @amount_in_raw, @amount_out_raw,
-        @amount_in_usd, @amount_out_usd, @gross_profit_usd,
-        @jito_tip_lamports, @priority_fee_lamports, @gas_lamports,
-        @net_profit_usd, @net_profit_sol,
+        @amount_in_sol, @amount_out_sol, @amount_in_usd, @amount_out_usd,
+        @gross_profit_sol, @gross_profit_usd, @net_profit_sol, @net_profit_usd,
+        @jito_tip_lamports, @jito_tip_sol, @priority_fee_lamports, @gas_lamports, @gas_sol,
+        @sol_usd_at_exec, @net_roi_pct,
         @tx_signature, @error_msg, @quote_json, @raw_json
       )
     `),

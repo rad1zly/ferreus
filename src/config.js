@@ -27,6 +27,13 @@ function envInt(key, defaultValue) {
   return Number.isNaN(n) ? defaultValue : n;
 }
 
+function envFloat(key, defaultValue) {
+  const raw = process.env[key];
+  if (raw === undefined || raw === null || raw === '') return defaultValue;
+  const n = parseFloat(raw);
+  return Number.isNaN(n) ? defaultValue : n;
+}
+
 function envBool(key, defaultValue) {
   const raw = process.env[key];
   if (raw === undefined || raw === null || raw === '') return defaultValue;
@@ -61,9 +68,13 @@ module.exports = {
   ARB_MIN_GAP_BPS: envInt('ARB_MIN_GAP_BPS', 30),        // 0.3% default
   ARB_COOLDOWN_MS: envInt('ARB_COOLDOWN_MS', 60000),     // 1 min per pair
   ARB_MIN_TVL_USD: envInt('ARB_MIN_TVL_USD', 0),         // 0 = disabled (no filter)
-  ARB_TRADE_SIZE_USDC: envInt('ARB_TRADE_SIZE_USDC', 100),  // notional per arb test
+  // Trade size — primary is SOL (0.01 SOL = 10M lamports ≈ $0.71 at SOL=$71)
+  ARB_TRADE_SIZE_SOL: envFloat('ARB_TRADE_SIZE_SOL', 0.01),
+  ARB_TRADE_SIZE_USDC: envInt('ARB_TRADE_SIZE_USDC', 0),  // legacy, 0 = use SOL
+  // Min profit thresholds (in SOL, since trade size is in SOL)
+  ARB_MIN_PROFIT_SOL: envFloat('ARB_MIN_PROFIT_SOL', 0.0001),  // 0.0001 SOL ≈ 0.7¢
+  ARB_MIN_PROFIT_USD: envInt('ARB_MIN_PROFIT_USD', 0),         // 0 = disabled
   ARB_MAX_SLIPPAGE_BPS: envInt('ARB_MAX_SLIPPAGE_BPS', 50),
-  ARB_MIN_PROFIT_USD: envInt('ARB_MIN_PROFIT_USD', 0),  // min projected profit to execute
 
   // Vault reader (Pool-2.5)
   VAULT_READER_ENABLED: envBool('VAULT_READER_ENABLED', true),

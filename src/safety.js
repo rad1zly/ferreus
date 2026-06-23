@@ -32,17 +32,26 @@ function guardDetect() {
  * - DRY_RUN (default): log only
  * - LIVE_EXECUTE + WALLET_PRIVATE_KEY: real execution
  *   - Refuses if no private key set
- *   - Per-trade notional capped (ARB_TRADE_SIZE_USDC)
- *   - Slippage capped (ARB_MAX_SLIPPAGE_BPS)
- *   - Min profit required (ARB_MIN_PROFIT_USD)
- *   - Paused if user invokes safety.pause()
+ * - Per-trade notional cap in SOL (0.01 SOL = ~$0.71 at SOL=$71)
+ * - Slippage capped (ARB_MAX_SLIPPAGE_BPS)
+ * - Min profit required (ARB_MIN_PROFIT_SOL)
+ * - Paused if user invokes safety.pause()
  */
 function guardTrade(opportunity) {
   if (paused) return { allowed: false, reason: 'paused' };
 
+  // Per-trade notional cap (in SOL). Pass `opportunity.sol` for SOL notional,
+  // or `opportunity.usd` for USD-equivalent (e.g. 0.01 SOL ≈ $0.71).
+  const oppSol = opportunity?.sol || 0;
   const oppUsd = opportunity?.usd || opportunity?.amountUsd || 0;
-  if (oppUsd > config.ARB_TRADE_SIZE_USDC) {
-    return { allowed: false, reason: `notional $${oppUsd} > max $${config.ARB_TRADE_SIZE_USDC}` };
+  if (oppSol > config.ARB_TRADE_SIZE_SOL) {
+    return { allowed: false, reason: `notional ${oppSol} SOL > max ${config.ARB_TRADE_SIZE_SOL} SOL` };
+  }
+  if (oppUsd > 0 && config.ARB_TRADE_SIZE_SOL > 0) {
+    // Sanity check: if USD provided, cap at 100x SOL max (for safety against price spikes)
+    if (oppUsd > config.ARB_TRADE_SIZE_SOL * 1000) {
+      return { allowed: false, reason: `notional $${oppUsd} unreasonably high` };
+    }
   }
 
   if (config.LIVE_EXECUTE) {
@@ -55,4 +64,5 @@ function guardTrade(opportunity) {
 }
 
 module.exports = { pause, resume, isPaused, guardDetect, guardTrade };
+
 

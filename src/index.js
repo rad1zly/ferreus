@@ -12,6 +12,7 @@ const arbDetector = require('./arbDetector');
 const vaultReader = require('./vaultReader');
 const executor = require('./executor');
 const jitoClient = require('./jitoClient');
+const jupiterClient = require('./jupiterClient');
 const jitoTip = require('./jitoTip');
 const coingecko = require('./coingecko');
 const priceOracle = require('./priceOracle');
@@ -221,6 +222,11 @@ async function main() {
         if (execStats && (execStats.simulated + execStats.submitted + execStats.failed) > 0) {
           msg += `\nExecutor: ${execStats.simulated} sim, ${execStats.failed} fail, est profit=$${execStats.totalProjectedProfitUsd.toFixed(2)}`;
         }
+        const jupStats = jupiterClient.stats;
+        if (jupStats.quotes > 0) {
+          const successRate = (jupStats.success / jupStats.quotes * 100).toFixed(1);
+          msg += `\nJupiter: ${jupStats.success}/${jupStats.quotes} ok (${successRate}%), ${jupStats.rateLimits} 429s, ${jupStats.retries} retries`;
+        }
         await notifier.info(msg);
         lastStatsNotif = Date.now();
       }
@@ -240,18 +246,20 @@ async function main() {
         }
       }
 
-      // --- Pool-3: process new arbs (every 5s) ---
-      if (Date.now() - lastArbProcess > 5000 && config.EXECUTION_ENABLED) {
+      // --- Pool-3: process new arbs (every 10s) ---
+      // Jupiter throttle: 1 RPS + 2 quotes per arb = 1 arb every ~2.5s
+      // Poll every 10s to keep rate of new arb attempts sustainable
+      if (Date.now() - lastArbProcess > 10000 && config.EXECUTION_ENABLED) {
         try {
           // Find arbs that haven't been executed yet
           const newArbs = database.db.prepare(`
             SELECT * FROM arb_candidates
             WHERE executed = 0
-            ORDER BY ts DESC LIMIT 10
+            ORDER BY ts DESC LIMIT 5
           `).all();
           for (const arb of newArbs) {
             // safety guard
-            const guard = safety.guardTrade({ usd: config.ARB_TRADE_SIZE_USDC });
+            const guard = safety.guardTrade({ sol: config.ARB_TRADE_SIZE_SOL });
             if (!guard.allowed) continue;
             await executor.execute(arb);
           }
