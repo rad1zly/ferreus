@@ -45,6 +45,7 @@ class ArbDetector {
     this.lastNotified = new Map(); // pairKey -> ts
     this.decimals = { ...KNOWN_MINTS };
     this.tvlCache = new Map();   // poolPubkey -> {tvlUsd, ts}
+    this._deviationLogged = new Map(); // pubkey -> ts (rate-limit deviancy logs)
     this.stats = {
       poolsReceived: 0,
       poolsSkippedNoPrice: 0,
@@ -57,6 +58,22 @@ class ArbDetector {
       gapsByDexPair: {},  // e.g. "raydium_clmm:orca_whirlpool" -> count
     };
     this._pruneTimer = null;
+  }
+
+  /**
+   * Get reference price for a (mintSmall, mintBig) pair, if both mints have a
+   * known USD price. Returns display price of mintBig per mintSmall, or null.
+   * Used for sanity-checking pool prices against reference (skip dust pools).
+   */
+  _getReferencePrice(mintSmall, mintBig) {
+    if (!this._usdCache) return null;
+    const priceSmall = this._usdCache.get?.(mintSmall);
+    const priceBig = this._usdCache.get?.(mintBig);
+    if (!priceSmall || !priceBig) return null;
+    // priceSmallPerBig display = how much mintBig for 1 mintSmall in USD terms
+    // 1 mintSmall = priceSmall USD, which is priceSmall/priceBig mintBig.
+    // So reference = priceSmall / priceBig.
+    return priceSmall / priceBig;
   }
 
   attachDb(database) {
@@ -140,6 +157,26 @@ class ArbDetector {
     if (!isFinite(priceSmallPerBig) || priceSmallPerBig <= 0) {
       this.stats.poolsSkippedNoPrice++;
       return;
+    }
+
+    // Sanity check: pool's price for a known pair (USDC, USDT, wSOL) should be within
+    // Nx of the reference price. Dust pools (e.g. $5 TVL) can have wildly random prices.
+    const refPrice = this._getReferencePrice(mintSmall, mintBig);
+    if (refPrice && config.ARB_MAX_PRICE_DEVIATION > 0) {
+      // multiplicative deviation: max(price/ref, ref/price)
+      const factor = Math.max(priceSmallPerBig / refPrice, refPrice / priceSmallPerBig);
+      if (factor > config.ARB_MAX_PRICE_DEVIATION) {
+        this.stats.poolsSkippedNoPrice++;
+        // log occasionally for debugging
+        const lastLog = this._deviationLogged.get(pool.pubkey) || 0;
+        if (Date.now() - lastLog > 60000) {
+          this._deviationLogged.set(pool.pubkey, Date.now());
+          log.warn('[detector] price deviates ' + factor.toFixed(1) + 'x from ref: ' +
+            (mintSmall.slice(0, 4) + '..') + '/' + (mintBig.slice(0, 4) + '..') +
+            ' pool=' + priceSmallPerBig.toExponential(2) + ' ref=' + refPrice.toExponential(2));
+        }
+        return;
+      }
     }
 
     const pairKey = `${mintSmall}:${mintBig}`;

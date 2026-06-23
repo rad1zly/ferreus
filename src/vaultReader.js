@@ -91,6 +91,32 @@ class VaultReader {
   }
 
   /**
+   * Compute TVL in USD for a CPMM pool using cached vault balances.
+   * Returns USD value or null if data missing.
+   * @param {string} pubkey
+   * @param {Function} priceLookup - async (mint) => usd_price
+   */
+  async computeTvlUsd(pubkey, priceLookup) {
+    const pool = this.pools.get(pubkey);
+    if (!pool) return null;
+    const va = this.cache.get(pool.vaultA);
+    const vb = this.cache.get(pool.vaultB);
+    if (!va || !vb || va.amount == null || vb.amount == null) return null;
+    if (va.amount === 0n || vb.amount === 0n) return null;
+
+    const decA = va.decimals ?? pool.decimalsA ?? 9;
+    const decB = vb.decimals ?? pool.decimalsB ?? 6;
+    const uiA = Number(va.amount) / Math.pow(10, decA);
+    const uiB = Number(vb.amount) / Math.pow(10, decB);
+
+    // Get prices (sync — uses in-memory priceOracle cache)
+    const priceA = priceLookup(pool.mintA);
+    const priceB = priceLookup(pool.mintB);
+    if (!priceA || !priceB) return null;
+    return uiA * priceA + uiB * priceB;
+  }
+
+  /**
    * Read cached vault balance. Returns {amount, decimals, ts} or null.
    * @param {string} vaultAddress
    * @param {number} maxAgeMs - default 30s
