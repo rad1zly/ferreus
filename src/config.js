@@ -68,16 +68,20 @@ module.exports = {
   ARB_MIN_GAP_BPS: envInt('ARB_MIN_GAP_BPS', 30),        // 0.3% default
   ARB_COOLDOWN_MS: envInt('ARB_COOLDOWN_MS', 60000),     // 1 min per pair
   // Cross-DEX arb detector (Phase Pool-2)
-  ARB_MIN_GAP_BPS: envInt('ARB_MIN_GAP_BPS', 200),       // 2% — was 30bps, but Jupiter eats small gaps
-  ARB_COOLDOWN_MS: envInt('ARB_COOLDOWN_MS', 300000),    // 5min per pair
-  ARB_MIN_TVL_USD: envInt('ARB_MIN_TVL_USD', 0),         // 0 = disabled
-  // Trade size — 0.1 SOL = 100M lamports ≈ $7.10 at SOL=$71
+  ARB_MIN_GAP_BPS: envInt('ARB_MIN_GAP_BPS', 30),        // 0.3% default (detection)
+  ARB_COOLDOWN_MS: envInt('ARB_COOLDOWN_MS', 60000),     // 1 min per pair
+  ARB_MIN_TVL_USD: envInt('ARB_MIN_TVL_USD', 0),         // 0 = disabled (no filter)
+  // Trade size — primary is SOL (0.1 SOL = 100M lamports ≈ $7 at SOL=$71)
   ARB_TRADE_SIZE_SOL: envFloat('ARB_TRADE_SIZE_SOL', 0.1),
-  ARB_TRADE_SIZE_USDC: envInt('ARB_TRADE_SIZE_USDC', 0),  // legacy
-  // Min profit threshold
-  ARB_MIN_PROFIT_SOL: envFloat('ARB_MIN_PROFIT_SOL', 0.0001),  // 0.0001 SOL ≈ 0.7¢
+  ARB_TRADE_SIZE_USDC: envInt('ARB_TRADE_SIZE_USDC', 0),  // legacy, 0 = use SOL
+  // Min profit thresholds (in SOL, since trade size is in SOL)
+  ARB_MIN_PROFIT_SOL: envFloat('ARB_MIN_PROFIT_SOL', 0.00005),  // 0.00005 SOL ≈ 0.35¢
   ARB_MIN_PROFIT_USD: envInt('ARB_MIN_PROFIT_USD', 0),         // 0 = disabled
   ARB_MAX_SLIPPAGE_BPS: envInt('ARB_MAX_SLIPPAGE_BPS', 50),
+  // Pool-3: execution-time gap filter (skip attempts on tiny AMM gaps that won't cover fees)
+  ARB_MIN_GAP_BPS_FOR_EXEC: envInt('ARB_MIN_GAP_BPS_FOR_EXEC', 100),  // 1% default
+  // Pool-3: per-arb execution cooldown (avoid double-fee on same opportunity)
+  ARB_EXEC_COOLDOWN_MS: envInt('ARB_EXEC_COOLDOWN_MS', 10 * 60 * 1000),  // 10 min
   // Pool-5 atomic execution: use direct 2-DEX quote (force route via specific DEX)
   // instead of Jupiter smart router. Captures the actual AMM-level gap.
   ARB_USE_DIRECT_DEX: envBool('ARB_USE_DIRECT_DEX', true),
