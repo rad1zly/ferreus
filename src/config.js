@@ -78,6 +78,11 @@ module.exports = {
   ARB_MIN_PROFIT_SOL: envFloat('ARB_MIN_PROFIT_SOL', 0.00005),  // 0.00005 SOL ≈ 0.35¢
   ARB_MIN_PROFIT_USD: envInt('ARB_MIN_PROFIT_USD', 0),         // 0 = disabled
   ARB_MAX_SLIPPAGE_BPS: envInt('ARB_MAX_SLIPPAGE_BPS', 50),
+  // Pool-3: direct 2-DEX quote (bypasses Jupiter smart router, captures AMM gap)
+  ARB_USE_DIRECT_2DEX_ROUTE: envBool('ARB_USE_DIRECT_2DEX_ROUTE', true),
+  // Pool-5: live execution
+  LIVE_EXECUTE: envBool('LIVE_EXECUTE', false),
+  WALLET_PRIVATE_KEY: process.env.WALLET_PRIVATE_KEY || null,
   // Pool-3: execution-time gap filter (skip attempts on tiny AMM gaps that won't cover fees)
   ARB_MIN_GAP_BPS_FOR_EXEC: envInt('ARB_MIN_GAP_BPS_FOR_EXEC', 100),  // 1% default
   // Pool-3: per-arb execution cooldown (avoid double-fee on same opportunity)

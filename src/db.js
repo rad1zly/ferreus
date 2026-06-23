@@ -215,6 +215,7 @@ function init() {
       gas_sol REAL,
       sol_usd_at_exec REAL,                -- SOL/USD price at execution time
       net_roi_pct REAL,                    -- (net_profit_sol / amount_in_sol) * 100
+      price_impact_pct REAL,               -- combined price impact (q1 + q2)
       tx_signature TEXT,
       error_msg TEXT,
       quote_json TEXT,
@@ -328,7 +329,7 @@ function init() {
         amount_in_sol, amount_out_sol, amount_in_usd, amount_out_usd,
         gross_profit_sol, gross_profit_usd, net_profit_sol, net_profit_usd,
         jito_tip_lamports, jito_tip_sol, priority_fee_lamports, gas_lamports, gas_sol,
-        sol_usd_at_exec, net_roi_pct,
+        sol_usd_at_exec, net_roi_pct, price_impact_pct,
         tx_signature, error_msg, quote_json, raw_json
       ) VALUES (
         @ts, @arb_id, @mode, @status, @strategy,
@@ -336,7 +337,7 @@ function init() {
         @amount_in_sol, @amount_out_sol, @amount_in_usd, @amount_out_usd,
         @gross_profit_sol, @gross_profit_usd, @net_profit_sol, @net_profit_usd,
         @jito_tip_lamports, @jito_tip_sol, @priority_fee_lamports, @gas_lamports, @gas_sol,
-        @sol_usd_at_exec, @net_roi_pct,
+        @sol_usd_at_exec, @net_roi_pct, @price_impact_pct,
         @tx_signature, @error_msg, @quote_json, @raw_json
       )
     `),

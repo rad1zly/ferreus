@@ -59,11 +59,28 @@ async function main() {
   const detector = new Detector(database);
   await detector.refreshTokenList();
 
+  // --- P5: Live execution wiring ---
+  // If LIVE_EXECUTE is on, load wallet and pass Solana connection to executor.
+  if (config.LIVE_EXECUTE && config.WALLET_PRIVATE_KEY) {
+    try {
+      jitoClient.loadWallet();
+      const { Connection: SolConn } = require('@solana/web3.js');
+      const liveConn = new SolConn(config.RPC_URL, 'confirmed');
+      executor.setConnection(liveConn);
+      log.warn(`[boot] LIVE_EXECUTE=true, wallet=${jitoClient.getWallet().publicKey.toBase58().slice(0,8)}…`);
+    } catch (e) {
+      log.error(`[boot] live setup failed: ${e.message}`);
+      process.exit(1);
+    }
+  } else {
+    log.info(`[boot] DRY_RUN mode (set LIVE_EXECUTE=true + WALLET_PRIVATE_KEY to go live)`);
+  }
+  executor.attachDb(database);
+
   // Pre-load decimals for arb detector (covers Orca Whirlpool which doesn't store decimals on-chain)
   arbDetector.setDecimalsBulk(detector.tokens);
 
-  // Phase Pool-3: attach executor to DB
-  executor.attachDb(database);
+  // Pre-load wallet for live mode (Phase Pool-5)
   if (config.LIVE_EXECUTE && config.WALLET_PRIVATE_KEY) {
     try { jitoClient.loadWallet(); } catch (e) { log.warn(`[main] wallet load failed: ${e.message}`); }
   }
@@ -260,8 +277,18 @@ async function main() {
           `).all();
           for (const arb of newArbs) {
             // safety guard
-            const guard = safety.guardTrade({ sol: config.ARB_TRADE_SIZE_SOL });
-            if (!guard.allowed) continue;
+            const guard = await safety.guardTrade({
+              tradeSizeSol: config.ARB_TRADE_SIZE_SOL,
+              expectedProfitSol: (arb.gap_bps || 0) / 10000 * config.ARB_TRADE_SIZE_SOL * 0.5,  // rough estimate
+              mintIn: 'So11111111111111111111111111111111111111112',
+              mintOut: 'So11111111111111111111111111111111111111112',
+              connection: executor._connection,
+              walletPubkey: config.LIVE_EXECUTE && jitoClient.getWallet() ? jitoClient.getWallet().publicKey : null,
+            });
+            if (!guard.ok) {
+              log.info(`[main] guard reject arb#${arb.id}: ${guard.reason}`);
+              continue;
+            }
             await executor.execute(arb);
           }
           lastArbProcess = Date.now();

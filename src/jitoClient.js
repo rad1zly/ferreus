@@ -200,6 +200,56 @@ class JitoClient {
     return { landed: false, error: 'timeout' };
   }
 
+  /**
+   * Submit a pre-signed bundle (Txs are already signed, we just bundle + send).
+   * @param {Array<Transaction|VersionedTransaction>} signedTxs - already signed
+   * @returns { bundleId, landed, slot, txSignature, error }
+   */
+  async submitSignedBundle(signedTxs) {
+    if (!Array.isArray(signedTxs) || signedTxs.length === 0) {
+      throw new Error('submitSignedBundle requires non-empty array');
+    }
+    try {
+      // Serialize to base58 for Jito
+      const bs58Txs = signedTxs.map(tx => {
+        if (tx.serialize) {
+          return bs58.encode(tx.serialize({ requireAllSignatures: false }));
+        }
+        throw new Error('tx has no serialize method');
+      });
+
+      // Submit
+      const startTs = Date.now();
+      const res = await axios.post(
+        `${JITO_BLOCK_ENGINE}/bundles`,
+        { jsonrpc: '2.0', id: 1, method: 'sendBundle', params: [bs58Txs] },
+        { timeout: 10000 }
+      );
+      if (res.data.error) {
+        log.warn(`[jito] bundle submit error: ${JSON.stringify(res.data.error)}`);
+        this.stats.bundlesFailed++;
+        return { landed: false, error: res.data.error.message || 'submit error' };
+      }
+      const bundleId = res.data.result;
+      this.stats.bundlesSubmitted++;
+      this.stats.totalTipLamports += config.JITO_TIP_LAMPORTS;
+      log.info(`[jito] bundle submitted: ${bundleId} (tip=${config.JITO_TIP_LAMPORTS} lamports, ${signedTxs.length} txs)`);
+
+      // Poll
+      const result = await this._pollBundle(bundleId, startTs);
+      if (result && result.landed) {
+        this.stats.bundlesLanded++;
+      } else {
+        this.stats.bundlesFailed++;
+      }
+      return { bundleId, ...result };
+    } catch (e) {
+      this.stats.bundlesFailed++;
+      log.warn(`[jito] submitSignedBundle failed: ${e.message}`);
+      return { landed: false, error: e.message };
+    }
+  }
+
   getStats() {
     return { ...this.stats };
   }

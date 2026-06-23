@@ -25,6 +25,8 @@ const JUPITER_QUOTE_PRIMARY = 'https://quote-api.jup.ag/v6/quote';
 const JUPITER_QUOTE_MIRROR = 'https://public.jupiterapi.com/quote';
 const JUPITER_TOKENS_PRIMARY = 'https://token.jup.ag/strict';
 const JUPITER_TOKENS_MIRROR = 'https://public.jupiterapi.com/tokens/strict';
+const JUPITER_SWAP_PRIMARY = 'https://quote-api.jup.ag/v6/swap';
+const JUPITER_SWAP_MIRROR = 'https://public.jupiterapi.com/swap';
 
 // Map our internal DEX names → Jupiter's `dexes` param values.
 // Both endpoints use these labels.
@@ -115,6 +117,41 @@ class JupiterClient {
 
   _sleep(ms) {
     return new Promise(r => setTimeout(r, ms));
+  }
+
+  /**
+   * Build a swap transaction from a quote response.
+   * Returns base64-encoded transaction on success, null on failure.
+   *
+   * @param {Object} quoteResponse - from getQuote()
+   * @param {string} userPublicKey - wallet pubkey as base58
+   * @param {Object} [opts] - { wrapAndUnwrapSol=true, dynamicComputeUnitLimit=true, prioritizationFeeLamports }
+   */
+  async getSwapTransaction(quoteResponse, userPublicKey, opts = {}) {
+    if (!quoteResponse) return null;
+    const body = {
+      quoteResponse,
+      userPublicKey,
+      wrapAndUnwrapSol: opts.wrapAndUnwrapSol !== false,
+      dynamicComputeUnitLimit: opts.dynamicComputeUnitLimit !== false,
+      prioritizationFeeLamports: opts.prioritizationFeeLamports ?? 5000,
+    };
+    const endpoints = [JUPITER_SWAP_PRIMARY, JUPITER_SWAP_MIRROR];
+    for (const url of endpoints) {
+      try {
+        const res = await axios.post(url, body, {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 15000,
+        });
+        if (res.data && res.data.swapTransaction) {
+          return res.data.swapTransaction;  // base64
+        }
+      } catch (e) {
+        // Try next endpoint
+      }
+    }
+    log.warn(`[jupiter] swap tx build failed on all endpoints`);
+    return null;
   }
 
   /**

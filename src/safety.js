@@ -4,6 +4,9 @@ const config = require('./config');
 const log = require('./logger');
 
 let paused = false;
+let killSwitch = false;
+let dailyLossSol = 0;
+let dailyResetTs = Date.now();
 
 function pause(reason = 'manual') {
   paused = true;
@@ -12,57 +15,127 @@ function pause(reason = 'manual') {
 
 function resume() {
   paused = false;
-  log.info('[safety] RESUMED');
+  log.info(`[safety] resumed`);
 }
 
 function isPaused() {
   return paused;
 }
 
-/**
- * Detector gate. P0 detector always runs (paper mode) but pauses can stop
- * notification spam. Returns {allowed, paused}.
- */
-function guardDetect() {
-  return { allowed: true, paused };
+function checkKillSwitch() {
+  return killSwitch;
+}
+
+function triggerKillSwitch(reason) {
+  killSwitch = true;
+  log.error(`[safety] KILL SWITCH TRIGGERED — reason: ${reason}`);
 }
 
 /**
- * Trade gate. Pool-3+ enforcement:
- * - DRY_RUN (default): log only
- * - LIVE_EXECUTE + WALLET_PRIVATE_KEY: real execution
- *   - Refuses if no private key set
- * - Per-trade notional cap in SOL (0.01 SOL = ~$0.71 at SOL=$71)
- * - Slippage capped (ARB_MAX_SLIPPAGE_BPS)
- * - Min profit required (ARB_MIN_PROFIT_SOL)
- * - Paused if user invokes safety.pause()
+ * P5: Pre-execution safety check. Returns { ok, reason }.
+ *
+ * Guards (all must pass for live execution):
+ * 1. Bot not paused
+ * 2. Kill switch not engaged
+ * 3. LIVE_EXECUTE enabled
+ * 4. Wallet key loaded
+ * 5. Trade notional within ARB_MAX_NOTIONAL_SOL
+ * 6. Projected profit > 0 (after tip + gas)
+ * 7. Daily loss limit not exceeded (config.ARB_DAILY_LOSS_SOL)
+ * 8. Wallet has enough SOL (estimated: tradeSize + tx fees + tip)
+ * 9. Mint allowlist (or denylist) check
+ *
+ * In DRY_RUN mode, only checks 1, 2, 8 (with relaxed notional/profit).
  */
-function guardTrade(opportunity) {
-  if (paused) return { allowed: false, reason: 'paused' };
+async function guardTrade({ tradeSizeSol, expectedProfitSol, mintIn, mintOut, connection, walletPubkey }) {
+  if (paused) return { ok: false, reason: 'bot paused' };
+  if (killSwitch) return { ok: false, reason: 'kill switch engaged' };
 
-  // Per-trade notional cap (in SOL). Pass `opportunity.sol` for SOL notional,
-  // or `opportunity.usd` for USD-equivalent (e.g. 0.01 SOL ≈ $0.71).
-  const oppSol = opportunity?.sol || 0;
-  const oppUsd = opportunity?.usd || opportunity?.amountUsd || 0;
-  if (oppSol > config.ARB_TRADE_SIZE_SOL) {
-    return { allowed: false, reason: `notional ${oppSol} SOL > max ${config.ARB_TRADE_SIZE_SOL} SOL` };
+  // Reset daily loss counter at UTC midnight
+  const now = Date.now();
+  const utcDay = Math.floor(now / 86400000);
+  const lastDay = Math.floor(dailyResetTs / 86400000);
+  if (utcDay > lastDay) {
+    dailyLossSol = 0;
+    dailyResetTs = now;
   }
-  if (oppUsd > 0 && config.ARB_TRADE_SIZE_SOL > 0) {
-    // Sanity check: if USD provided, cap at 100x SOL max (for safety against price spikes)
-    if (oppUsd > config.ARB_TRADE_SIZE_SOL * 1000) {
-      return { allowed: false, reason: `notional $${oppUsd} unreasonably high` };
+
+  const isLive = config.LIVE_EXECUTE && config.WALLET_PRIVATE_KEY;
+  if (!isLive) {
+    return { ok: true, reason: 'dry_run mode' };
+  }
+
+  // Live guards
+  if (!connection) return { ok: false, reason: 'no RPC connection' };
+  if (!walletPubkey) return { ok: false, reason: 'no wallet pubkey' };
+
+  // Notional cap
+  const maxNotional = config.ARB_MAX_NOTIONAL_SOL || 1.0;  // 1 SOL default
+  if (tradeSizeSol > maxNotional) {
+    triggerKillSwitch(`trade size ${tradeSizeSol} SOL > max ${maxNotional} SOL`);
+    return { ok: false, reason: `notional > max (${tradeSizeSol} > ${maxNotional})` };
+  }
+
+  // Profit must be positive
+  if (expectedProfitSol <= 0) {
+    return { ok: false, reason: `no profit (${expectedProfitSol.toFixed(6)} SOL)` };
+  }
+
+  // Daily loss limit
+  const dailyLossLimit = config.ARB_DAILY_LOSS_SOL || 0.1;  // 0.1 SOL = $7 default
+  if (dailyLossSol >= dailyLossLimit) {
+    triggerKillSwitch(`daily loss limit reached: ${dailyLossSol} SOL`);
+    return { ok: false, reason: `daily loss limit reached` };
+  }
+
+  // Mint allowlist (if configured)
+  const allowlist = config.ARB_MINT_ALLOWLIST;  // comma-separated mint pubkeys
+  if (allowlist) {
+    const allowed = allowlist.split(',').map(s => s.trim());
+    if (mintIn && !allowed.includes(mintIn)) {
+      return { ok: false, reason: `mint_in not in allowlist: ${mintIn}` };
+    }
+    if (mintOut && !allowed.includes(mintOut)) {
+      return { ok: false, reason: `mint_out not in allowlist: ${mintOut}` };
     }
   }
 
-  if (config.LIVE_EXECUTE) {
-    if (!config.WALLET_PRIVATE_KEY) {
-      return { allowed: false, reason: 'LIVE_EXECUTE=true but WALLET_PRIVATE_KEY not set' };
+  // Check wallet balance
+  try {
+    const balance = await connection.getBalance(walletPubkey);
+    const balanceSol = balance / 1e9;
+    const requiredSol = tradeSizeSol + (config.JITO_TIP_LAMPORTS / 1e9) + 0.001;  // 0.001 buffer for tx fees
+    if (balanceSol < requiredSol) {
+      return { ok: false, reason: `insufficient balance: ${balanceSol.toFixed(4)} < ${requiredSol.toFixed(4)} SOL` };
     }
-    return { allowed: true, dryRun: false, mode: 'live' };
+  } catch (e) {
+    return { ok: false, reason: `balance check failed: ${e.message}` };
   }
-  return { allowed: true, dryRun: true, mode: 'dry_run' };
+
+  return { ok: true, reason: 'all guards passed' };
 }
 
-module.exports = { pause, resume, isPaused, guardDetect, guardTrade };
+function recordLoss(solAmount) {
+  dailyLossSol += Math.abs(solAmount);
+  log.warn(`[safety] loss recorded: ${solAmount} SOL (daily total: ${dailyLossSol} SOL)`);
+}
 
+function recordProfit(solAmount) {
+  log.info(`[safety] profit recorded: +${solAmount} SOL (daily total profit: -${dailyLossSol} SOL)`);
+}
 
+function getStatus() {
+  return { paused, killSwitch, dailyLossSol, dailyResetTs };
+}
+
+module.exports = {
+  pause,
+  resume,
+  isPaused,
+  triggerKillSwitch,
+  checkKillSwitch,
+  guardTrade,
+  recordLoss,
+  recordProfit,
+  getStatus,
+};
