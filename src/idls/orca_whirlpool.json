@@ -1,0 +1,81 @@
+{
+  "version": "0.1.0",
+  "name": "whirlpool",
+  "programId": "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",
+  "discriminator": [63, 149, 209, 12, 225, 128, 99, 9],
+  "size": 653,
+  "accounts": [
+    {
+      "name": "Whirlpool",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          { "name": "discriminator", "type": { "kind": "array", "type": "u8", "len": 8 } },
+          { "name": "whirlpoolsConfig", "type": "publicKey" },
+          { "name": "whirlpoolBump", "type": { "kind": "array", "type": "u8", "len": 1 } },
+          { "name": "tickSpacing", "type": "u16" },
+          { "name": "feeTierIndexSeed", "type": { "kind": "array", "type": "u8", "len": 2 } },
+          { "name": "feeRate", "type": "u16" },
+          { "name": "protocolFeeRate", "type": "u16" },
+          { "name": "liquidity", "type": "u128" },
+          { "name": "sqrtPrice", "type": "u128" },
+          { "name": "tickCurrentIndex", "type": "i32" },
+          { "name": "protocolFeeOwedA", "type": "u64" },
+          { "name": "protocolFeeOwedB", "type": "u64" },
+          { "name": "tokenMintA", "type": "publicKey" },
+          { "name": "tokenVaultA", "type": "publicKey" },
+          { "name": "feeGrowthGlobalA", "type": "u128" },
+          { "name": "tokenMintB", "type": "publicKey" },
+          { "name": "tokenVaultB", "type": "publicKey" },
+          { "name": "feeGrowthGlobalB", "type": "u128" },
+          { "name": "rewardLastUpdatedTimestamp", "type": "u64" },
+          {
+            "name": "rewardInfos",
+            "type": {
+              "kind": "array",
+              "type": {
+                "defined": "WhirlpoolRewardInfo"
+              },
+              "len": 3
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "WhirlpoolRewardInfo",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          { "name": "mint", "type": "publicKey" },
+          { "name": "vault", "type": "publicKey" },
+          { "name": "authority", "type": "publicKey" },
+          { "name": "emissionsPerSecondX64", "type": "u128" },
+          { "name": "growthGlobalX64", "type": "u128" },
+          { "name": "emissionsRemaining", "type": "u64" }
+        ]
+      }
+    }
+  ],
+  "types": [
+    {
+      "name": "WhirlpoolRewardInfo",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          { "name": "mint", "type": "publicKey" },
+          { "name": "vault", "type": "publicKey" },
+          { "name": "authority", "type": "publicKey" },
+          { "name": "emissionsPerSecondX64", "type": "u128" },
+          { "name": "growthGlobalX64", "type": "u128" },
+          { "name": "emissionsRemaining", "type": "u64" }
+        ]
+      }
+    }
+  ],
+  "_meta": {
+    "source": "Hand-built from @orca-so/whirlpools-client v7.0.0 Codama-generated types (DISCRIMINATOR and SIZE extracted from dist/index.js)",
+    "version": "Whirlpools latest (Codama-generated)",
+    "note": "Discriminator bytes: [63, 149, 209, 12, 225, 128, 99, 9] from WHIRLPOOL_DISCRIMINATOR constant. Total account size: 653 bytes from getWhirlpoolSize()."
+  }
+}

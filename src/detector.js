@@ -12,6 +12,7 @@ class Detector {
     this.tokens = [];
     this.cursor = 0;
     this.scannedThisRun = 0;
+    this.startedAt = Date.now();
   }
 
   /**
@@ -56,6 +57,18 @@ class Detector {
       await sleep(200);
     }
     this.scannedThisRun += batchSize;
+    // Progress log every 100 tokens (~100s at batch=20/interval=20s)
+    if (this.scannedThisRun % 100 < batchSize) {
+      const elapsed = this.startedAt ? Math.round((Date.now() - this.startedAt) / 1000) : 0;
+      const rate = elapsed > 0 ? (this.scannedThisRun / (elapsed / 60)).toFixed(1) : '?';
+      const remaining = Math.max(0, this.tokens.length - this.cursor);
+      const etaMin = (remaining / batchSize) * (config.POLL_INTERVAL_MS / 1000) / 60;
+      log.info(
+        `[detector] progress: ${this.scannedThisRun} scanned | ` +
+        `cursor ${this.cursor}/${this.tokens.length} | ` +
+        `rate ${rate} tok/min | ETA ${etaMin.toFixed(0)}min`
+      );
+    }
     return found;
   }
 
