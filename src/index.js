@@ -6,7 +6,7 @@ const db = require('./db');
 const Detector = require('./detector');
 const newPoolMonitor = require('./newPoolMonitor');
 const pumpfunMonitor = require('./pumpfunMonitor');
-const coingecko = require('./coingecko');
+const decoderWorker = require('./decoderWorker');
 const jitoTip = require('./jitoTip');
 const telegramBot = require('./telegramBot');
 const notifier = require('./notifier');
@@ -58,6 +58,10 @@ async function main() {
   newPoolMonitor.start();
   pumpfunMonitor.start();
 
+  // --- P1 Decoder worker: pick up undecoded new-pool events ---
+  decoderWorker.attachDb(database);
+  decoderWorker.start();
+
   // --- Auxiliary signals (CoinGecko trending, Jito tip floor) ---
   // CoinGecko: refresh every 5 min — slow signal, mostly informational
   let lastTrendingRefresh = 0;
@@ -84,7 +88,7 @@ async function main() {
     await notifier.info(
       `Ferreus online — DRY_RUN=${config.DRY_RUN}, ` +
       `poll ${config.POLL_INTERVAL_MS}ms, ${detector.tokens.length} tokens, ` +
-      `monitoring 6 DEX programs + Pumpfun migration`
+      `monitoring 6 DEX programs + Pumpfun migration, P1 decoder active`
     );
   }
 
@@ -153,12 +157,14 @@ process.on('SIGINT', async () => {
   log.info('[main] SIGINT received, stopping detectors...');
   newPoolMonitor.stop();
   pumpfunMonitor.stop();
+  decoderWorker.stop();
   setTimeout(() => process.exit(0), 500);
 });
 process.on('SIGTERM', async () => {
   log.info('[main] SIGTERM received, stopping detectors...');
   newPoolMonitor.stop();
   pumpfunMonitor.stop();
+  decoderWorker.stop();
   setTimeout(() => process.exit(0), 500);
 });
 

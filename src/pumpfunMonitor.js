@@ -1,28 +1,15 @@
 'use strict';
 
-// Pumpfun migration monitor. Per @uyar121 thread:
-// "hunting arbitrage dari token baru (misal migrasi dari Pumpfun dan add new liq
-//  di Meteora)" — these are the highest-alpha events.
-// Pumpfun program: 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P
-//
-// P0 strategy: poll signatures on Pumpfun program, filter logs for "migrate"
-//   pattern (Raydium AMM v4 migration, Pump.fun's graduation event).
-//   Token mint + new pool address extracted in P1 (decoder complexity).
+// Pumpfun migration monitor — polls Pumpfun program for sigs. Real migrations
+// are complex multi-CPI txs (Pumpfun → Raydium/CLMM/DAMM); they don't have a
+// single 'migrate' instruction. The decoder worker uses transaction analysis
+// to identify real migrations.
 
 const rpc = require('./solanaRpc');
 const log = require('./logger');
-const safety = require('./safety');
 
 const PUMPFUN_PROGRAM = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
 const PUMPFUN_AMM_MIGRATE = '39azUYFWPz3VHgKCf3VChUwbpURdCHRxjB3kmG9wbUY6';
-
-const MIGRATION_LOG_PATTERNS = [
-  'migrate',         // Pumpfun graduation
-  'graduated',       // sometimes "Pool graduated"
-  'migrate_pool',
-  'raydiummigrate',  // Pumpfun's specific log
-  'migratetoamm',
-];
 
 class PumpfunMonitor {
   constructor() {
@@ -35,10 +22,10 @@ class PumpfunMonitor {
     this.stats = {
       ticks: 0,
       sigsSeen: 0,
-      migrationEvents: 0,
+      sigsInserted: 0,
       errors: 0,
     };
-    this.maxSigsPerProgramPerTick = 3;
+    this.sigsPerProgramPerTick = 3;
   }
 
   attachDb(database) {
@@ -46,73 +33,49 @@ class PumpfunMonitor {
     this.stmts = database.stmts || null;
   }
 
-  matchMigration(logs) {
-    if (!Array.isArray(logs)) return { matched: false };
-    const joined = logs.join('\n').toLowerCase();
-    for (const pat of MIGRATION_LOG_PATTERNS) {
-      if (joined.includes(pat)) return { matched: true, pattern: pat };
-    }
-    return { matched: false };
-  }
-
-  async processSignature(sig) {
-    if (!this.stmts) {
-      log.error('[pumpfun] db not attached, call attachDb() first');
-      return null;
-    }
-    if (this.seenSignatures.has(sig.signature)) return null;
-    const tx = await rpc.getTransaction(sig.signature);
-    if (!tx || !tx.meta) return null;
-
-    const logs = tx.meta.logMessages || [];
-    const match = this.matchMigration(logs);
+  insertCandidate(programAddr, sig) {
+    if (this.seenSignatures.has(sig.signature)) return false;
+    if (!this.stmts) return false;
 
     this.seenSignatures.set(sig.signature, Date.now() + this.cacheTtlMs);
 
-    if (!match.matched) return null;
-
-    const record = {
-      signature: sig.signature,
-      program: 'pumpfun',
-      program_address: PUMPFUN_PROGRAM,
-      kind: 'pumpfun_migration',
-      pattern: match.pattern,
-      slot: sig.slot,
-      block_time: sig.blockTime,
-      err: sig.err ? JSON.stringify(sig.err) : null,
-      fee: tx.meta.fee,
-      log_count: logs.length,
-      detected_at: Date.now(),
-    };
-
     try {
-      this.stmts.insertNewPool.run(record);
-      this.stats.migrationEvents += 1;
-      log.info(`[pumpfun] migration | pattern=${match.pattern} | sig=${sig.signature.slice(0, 16)}...`);
-      return record;
+      const result = this.stmts.insertNewPool.run({
+        signature: sig.signature,
+        program: 'pumpfun',
+        program_address: programAddr,
+        kind: 'pumpfun_candidate',
+        pattern: null,
+        slot: sig.slot,
+        block_time: sig.blockTime,
+        err: sig.err ? JSON.stringify(sig.err) : null,
+        fee: null,
+        log_count: null,
+        detected_at: Date.now(),
+      });
+      this.stats.sigsInserted += 1;
+      return result.changes > 0;
     } catch (e) {
-      log.error(`[pumpfun] db insert failed: ${e.message}`);
-      return null;
+      if (e.message.includes('UNIQUE')) return false;
+      log.error(`[pumpfun] insert failed: ${e.message}`);
+      this.stats.errors += 1;
+      return false;
     }
   }
 
   async tick() {
-    if (!safety.guardDetect('pumpfun')) return;
+    if (!this.stmts) return;
     this.stats.ticks += 1;
 
     for (const programAddr of [PUMPFUN_PROGRAM, PUMPFUN_AMM_MIGRATE]) {
       try {
-        const sigs = await rpc.getSignaturesForAddress(programAddr, { limit: 5 });
+        const sigs = await rpc.getSignaturesForAddress(programAddr, { limit: this.sigsPerProgramPerTick });
         if (!sigs) { this.stats.errors += 1; continue; }
         this.stats.sigsSeen += sigs.length;
 
-        let processed = 0;
         for (const sig of sigs) {
           if (sig.err) continue;
-          if (this.seenSignatures.has(sig.signature)) continue;
-          if (processed >= this.maxSigsPerProgramPerTick) break;
-          await this.processSignature(sig);
-          processed += 1;
+          this.insertCandidate(programAddr, sig);
         }
       } catch (e) {
         this.stats.errors += 1;
@@ -130,7 +93,7 @@ class PumpfunMonitor {
     if (this.running) return;
     this.running = true;
     const interval = parseInt(process.env.POLL_INTERVAL_MS || '10000', 10);
-    log.info(`[pumpfun] migration monitor started — polling every ${interval}ms`);
+    log.info(`[pumpfun] monitor started — collecting sigs every ${interval}ms (decoder worker filters for real migrations)`);
     const loop = async () => {
       if (!this.running) return;
       try { await this.tick(); }
@@ -143,7 +106,7 @@ class PumpfunMonitor {
   stop() {
     this.running = false;
     if (this.timer) clearTimeout(this.timer);
-    log.info('[pumpfun] migration monitor stopped');
+    log.info('[pumpfun] monitor stopped');
   }
 
   getStats() {

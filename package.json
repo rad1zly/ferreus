@@ -5,9 +5,10 @@
   "main": "index.js",
   "type": "commonjs",
   "scripts": {
-    "start": "node src/index.js",
     "smoke": "node scripts/smoke-test.js",
-    "find-launchpads": "node scripts/find-launchpads.js"
+    "find-launchpads": "node scripts/find-launchpads.js",
+    "backfill": "node scripts/backfill-decode.js",
+    "start": "node src/index.js"
   },
   "dependencies": {
     "axios": "^1.7.7",
