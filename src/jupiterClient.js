@@ -6,6 +6,7 @@ const log = require('./logger');
 // Per snipetrench pattern #12: only verified-working endpoints.
 // - token.jup.ag/strict has no DNS from this network (ENOTFOUND)
 // - api.jup.ag/swap/v1/quote works
+// - api.jup.ag/swap/v1/swap works
 // Falling back to Solana Labs official token list (6MB, no key) for token universe.
 const TOKEN_LIST_URL = 'https://raw.githubusercontent.com/solana-labs/token-list/main/src/tokens/solana.tokenlist.json';
 const JUPITER_QUOTE  = 'https://api.jup.ag/swap/v1/quote';
@@ -17,24 +18,35 @@ class JupiterClient {
     this.tokenCacheTs = 0;
     this.cacheTtlMs = 3600000; // 1h
     this._lastQuoteTs = 0;
-    this._quoteMinInterval = 1000;  // 1 RPS — conservative for public API
+    this._quoteMinInterval = 300;  // 3.3 RPS — Jupiter public API limit
     this._consecRateLimit = 0;
     this._backoffMs = 0;
+    this._lastNoRoute = false;   // last call was NO_ROUTES_FOUND (use for fallback)
+    // Map our pool decoder dex names -> Jupiter's DEX labels
+    // Source: https://api.jup.ag/swap/v1/program-id-to-label
+    this.DEX_LABELS = {
+      raydium_cpmm: 'Raydium CP',
+      raydium_clmm: 'Raydium CLMM',
+      orca_whirlpool: 'Whirlpool',
+      meteora_dlmm: 'Meteora DLMM',
+      meteora_damm_v2: 'Meteora DAMM v2',
+      raydium: 'Raydium',
+    };
     this.stats = {
       quotes: 0,
       success: 0,
       rateLimits: 0,
       retries: 0,
+      noRoutes: 0,
       lastError: null,
     };
   }
 
   async _throttleQuote() {
     const now = Date.now();
-    const elapsed = now - this._lastQuoteTs;
     // Dynamic backoff: 2x after each 429, capped at 30s
     const dynamicMin = Math.min(this._quoteMinInterval * Math.pow(2, this._consecRateLimit), 30000);
-    const wait = Math.max(dynamicMin - elapsed, 0);
+    const wait = Math.max(dynamicMin - (now - this._lastQuoteTs), 0);
     if (wait > 0) await new Promise(r => setTimeout(r, wait));
     this._lastQuoteTs = Date.now();
   }
@@ -48,6 +60,14 @@ class JupiterClient {
     this._consecRateLimit++;
     this._backoffMs = Math.min(this._quoteMinInterval * Math.pow(2, this._consecRateLimit), 30000);
     this.stats.rateLimits++;
+  }
+
+  /**
+   * Map our decoder dex name (e.g. 'orca_whirlpool') to Jupiter's label
+   * (e.g. 'Whirlpool'). Returns null if unknown.
+   */
+  jupLabel(ourDexName) {
+    return this.DEX_LABELS[ourDexName] || null;
   }
 
   /**
@@ -86,31 +106,57 @@ class JupiterClient {
    * @param {string} q.outputMint
    * @param {number} q.amount
    * @param {number} [q.slippageBps=50]
-   * @param {string} [q.dexes] - comma-separated DEX names (e.g. "raydium_clmm,orca_whirlpool")
-   *   For atomic 2-DEX arb, restrict route to specific DEXes.
-   * @param {boolean} [q.onlyDirectRoutes=false]
+   * @param {string[]} [q.dexes] - restrict to specific Jupiter DEXes (atomic 2-DEX arb)
+   * @param {boolean} [q.onlyDirectRoutes=false] - only direct pools, no multi-hop
+   * @param {string} [q.swapMode='ExactIn']
+   * @param {Object} [opts]
+   * @param {number} [opts.maxRetries=3]
    */
-  async getQuote({ inputMint, outputMint, amount, slippageBps = 50, dexes, onlyDirectRoutes }, opts = {}) {
+  async getQuote({ inputMint, outputMint, amount, slippageBps = 50, dexes, onlyDirectRoutes, swapMode = 'ExactIn' }, opts = {}) {
     const maxRetries = opts.maxRetries ?? 3;
     this.stats.quotes++;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       await this._throttleQuote();
-      const params = { inputMint, outputMint, amount, slippageBps };
-      if (dexes) params.dexes = dexes;
+      const params = { inputMint, outputMint, amount, slippageBps, swapMode };
+      if (dexes && dexes.length > 0) params.dexes = dexes.join(',');
       if (onlyDirectRoutes) params.onlyDirectRoutes = 'true';
       try {
         const res = await axios.get(JUPITER_QUOTE, { params, timeout: 10000 });
-        if (!res.data || res.data.error) {
+        if (!res.data) {
           this._noteSuccess();
+          this._lastNoRoute = false;
+          return null;
+        }
+        // Jupiter returns 400 with errorCode=NO_ROUTES_FOUND when no route
+        // exists for the given dexes constraint. Distinguish from real errors.
+        if (res.data.error) {
+          if (res.data.errorCode === 'NO_ROUTES_FOUND' ||
+              /no.*route/i.test(res.data.error || '')) {
+            this._noteSuccess();
+            this._lastNoRoute = true;
+            this.stats.noRoutes++;
+            return null;
+          }
+          this._lastNoRoute = false;
+          this.stats.lastError = res.data.error;
           return null;
         }
         this._noteSuccess();
+        this._lastNoRoute = false;
         this.stats.success++;
         return res.data;
       } catch (e) {
         const is429 = e.response && e.response.status === 429;
+        const is400 = e.response && e.response.status === 400;
         const isTimeout = e.code === 'ECONNABORTED' || e.code === 'ETIMEDOUT';
+        // 400 with NO_ROUTES_FOUND in body → not an error, just no route
+        if (is400 && e.response?.data?.errorCode === 'NO_ROUTES_FOUND') {
+          this._noteSuccess();
+          this._lastNoRoute = true;
+          this.stats.noRoutes++;
+          return null;
+        }
         if ((is429 || isTimeout) && attempt < maxRetries) {
           this._noteRateLimit();
           this.stats.retries++;
@@ -121,12 +167,18 @@ class JupiterClient {
           await new Promise(r => setTimeout(r, backoff));
           continue;
         }
+        this._lastNoRoute = false;
         this.stats.lastError = e.message;
         log.warn(`[jupiter] quote failed: ${e.message}`);
         return null;
       }
     }
     return null;
+  }
+
+  /** Last call returned NO_ROUTES_FOUND (caller should fall back to broader route). */
+  wasLastCallNoRoute() {
+    return this._lastNoRoute;
   }
 
   /**
@@ -155,6 +207,10 @@ class JupiterClient {
       log.warn(`[jupiter] swap tx failed: ${e.message}`);
       return null;
     }
+  }
+
+  getStats() {
+    return { ...this.stats };
   }
 }
 

@@ -67,14 +67,14 @@ module.exports = {
   // Cross-DEX arb detector (Phase Pool-2)
   ARB_MIN_GAP_BPS: envInt('ARB_MIN_GAP_BPS', 30),        // 0.3% default
   ARB_COOLDOWN_MS: envInt('ARB_COOLDOWN_MS', 60000),     // 1 min per pair
-  ARB_MIN_TVL_USD: envInt('ARB_MIN_TVL_USD', 0),         // 0 = disabled (no filter)
-  // Price sanity check: skip pool if its price deviates > N× from reference
-  // (filters out dust pools with random prices, e.g. $5 TVL CPMM)
-  ARB_MAX_PRICE_DEVIATION: envFloat('ARB_MAX_PRICE_DEVIATION', 3.0),  // 3x = +200%/-67%
-  // Trade size — primary is SOL (0.01 SOL = 10M lamports ≈ $0.71 at SOL=$71)
-  ARB_TRADE_SIZE_SOL: envFloat('ARB_TRADE_SIZE_SOL', 0.01),
-  ARB_TRADE_SIZE_USDC: envInt('ARB_TRADE_SIZE_USDC', 0),  // legacy, 0 = use SOL
-  // Min profit thresholds (in SOL, since trade size is in SOL)
+  // Cross-DEX arb detector (Phase Pool-2)
+  ARB_MIN_GAP_BPS: envInt('ARB_MIN_GAP_BPS', 200),       // 2% — was 30bps, but Jupiter eats small gaps
+  ARB_COOLDOWN_MS: envInt('ARB_COOLDOWN_MS', 300000),    // 5min per pair
+  ARB_MIN_TVL_USD: envInt('ARB_MIN_TVL_USD', 0),         // 0 = disabled
+  // Trade size — 0.1 SOL = 100M lamports ≈ $7.10 at SOL=$71
+  ARB_TRADE_SIZE_SOL: envFloat('ARB_TRADE_SIZE_SOL', 0.1),
+  ARB_TRADE_SIZE_USDC: envInt('ARB_TRADE_SIZE_USDC', 0),  // legacy
+  // Min profit threshold
   ARB_MIN_PROFIT_SOL: envFloat('ARB_MIN_PROFIT_SOL', 0.0001),  // 0.0001 SOL ≈ 0.7¢
   ARB_MIN_PROFIT_USD: envInt('ARB_MIN_PROFIT_USD', 0),         // 0 = disabled
   ARB_MAX_SLIPPAGE_BPS: envInt('ARB_MAX_SLIPPAGE_BPS', 50),

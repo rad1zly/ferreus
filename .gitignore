@@ -1,46 +1,8 @@
-# Node
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
 node_modules/
-*.log
-npm-debug.log*
-
-# Env / secrets
 .env
-.env.local
-.env.*.local
-*.key
-*.pem
-secrets/
-
-# Data
-data/
-*.db
-*.db-journal
-*.db-shm
-*.db-wal
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Editor
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Build
-dist/
-build/
-.cache/
-
-# Telegram bot state (per snipetrench pattern)
-.tg-state/
-.tg-update-offset
-
-# Logs
-logs/
 *.log
-
-# Local artifacts
-/tmp-*
-*.tmp
+.tmp/
