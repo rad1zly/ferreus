@@ -111,24 +111,29 @@ class JitoClient {
    * @param {Transaction} arbTx - the unsigned arb transaction
    * @param {Object} opts - { skipSign, prebuiltTipTx }
    */
-  async submitBundle(connection, arbTx, opts = {}) {
+  async submitBundle(connection, arbTxOrTxs, opts = {}) {
     if (!this._keypair) this.loadWallet();
+    const arbTxs = Array.isArray(arbTxOrTxs) ? arbTxOrTxs : [arbTxOrTxs];
 
     try {
       // Build tip tx
       const tipTx = opts.prebuiltTipTx || await this.buildTipTx(connection);
 
-      // Sign arb tx
-      if (!opts.skipSign) {
-        arbTx.feePayer = this._keypair.publicKey;
-        arbTx.recentBlockhash = (await connection.getRecentBlockhash()).blockhash;
-        arbTx.sign(this._keypair);
+      // Sign arb txs (if not pre-signed)
+      const signedTxs = [];
+      for (const tx of arbTxs) {
+        if (!opts.skipSign) {
+          tx.feePayer = this._keypair.publicKey;
+          tx.recentBlockhash = (await connection.getRecentBlockhash()).blockhash;
+          tx.sign(this._keypair);
+        }
+        signedTxs.push(bs58.encode(tx.serialize({ requireAllSignatures: false })));
       }
 
-      // Bundle format: array of base58-encoded signed transactions
+      // Bundle format: [tipTx, ...arbTxs] — tip first, then arb
       const bundle = [
         bs58.encode(tipTx.serialize({ requireAllSignatures: false })),
-        bs58.encode(arbTx.serialize({ requireAllSignatures: false })),
+        ...signedTxs,
       ];
 
       // Submit

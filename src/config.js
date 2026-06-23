@@ -78,6 +78,9 @@ module.exports = {
   ARB_MIN_PROFIT_SOL: envFloat('ARB_MIN_PROFIT_SOL', 0.0001),  // 0.0001 SOL ≈ 0.7¢
   ARB_MIN_PROFIT_USD: envInt('ARB_MIN_PROFIT_USD', 0),         // 0 = disabled
   ARB_MAX_SLIPPAGE_BPS: envInt('ARB_MAX_SLIPPAGE_BPS', 50),
+  // Pool-5 atomic execution: use direct 2-DEX quote (force route via specific DEX)
+  // instead of Jupiter smart router. Captures the actual AMM-level gap.
+  ARB_USE_DIRECT_DEX: envBool('ARB_USE_DIRECT_DEX', true),
 
   // Vault reader (Pool-2.5)
   VAULT_READER_ENABLED: envBool('VAULT_READER_ENABLED', true),

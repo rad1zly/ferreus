@@ -9,6 +9,7 @@ const log = require('./logger');
 // Falling back to Solana Labs official token list (6MB, no key) for token universe.
 const TOKEN_LIST_URL = 'https://raw.githubusercontent.com/solana-labs/token-list/main/src/tokens/solana.tokenlist.json';
 const JUPITER_QUOTE  = 'https://api.jup.ag/swap/v1/quote';
+const JUPITER_SWAP   = 'https://api.jup.ag/swap/v1/swap';
 
 class JupiterClient {
   constructor() {
@@ -79,20 +80,29 @@ class JupiterClient {
    * Get a quote. Returns Jupiter quote object or null on error.
    * amount is in raw token units (e.g. lamports for SOL).
    * Retries up to 3 times on 429 with exponential backoff.
+   *
+   * @param {Object} q
+   * @param {string} q.inputMint
+   * @param {string} q.outputMint
+   * @param {number} q.amount
+   * @param {number} [q.slippageBps=50]
+   * @param {string} [q.dexes] - comma-separated DEX names (e.g. "raydium_clmm,orca_whirlpool")
+   *   For atomic 2-DEX arb, restrict route to specific DEXes.
+   * @param {boolean} [q.onlyDirectRoutes=false]
    */
-  async getQuote({ inputMint, outputMint, amount, slippageBps = 50 }, opts = {}) {
+  async getQuote({ inputMint, outputMint, amount, slippageBps = 50, dexes, onlyDirectRoutes }, opts = {}) {
     const maxRetries = opts.maxRetries ?? 3;
     this.stats.quotes++;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       await this._throttleQuote();
+      const params = { inputMint, outputMint, amount, slippageBps };
+      if (dexes) params.dexes = dexes;
+      if (onlyDirectRoutes) params.onlyDirectRoutes = 'true';
       try {
-        const res = await axios.get(JUPITER_QUOTE, {
-          params: { inputMint, outputMint, amount, slippageBps },
-          timeout: 10000,
-        });
+        const res = await axios.get(JUPITER_QUOTE, { params, timeout: 10000 });
         if (!res.data || res.data.error) {
-          this._noteSuccess();  // got a response, just no route
+          this._noteSuccess();
           return null;
         }
         this._noteSuccess();
@@ -117,6 +127,34 @@ class JupiterClient {
       }
     }
     return null;
+  }
+
+  /**
+   * Build a swap transaction from a quote response.
+   * Returns { swapTransaction: <base64 string>, lastValidBlockHeight } or null.
+   * The returned transaction is signed by Jupiter's fee payer only; we must
+   * sign with the user wallet before submitting.
+   */
+  async getSwapTransaction({ quoteResponse, userPublicKey, wrapAndUnwrapSol = true, prioritizationFeeLamports, dynamicComputeUnitLimit = true }) {
+    if (!quoteResponse || !userPublicKey) return null;
+    this.stats.quotes++;  // reuse counter (it's a Jupiter API call)
+    await this._throttleQuote();
+    const body = { quoteResponse, userPublicKey, wrapAndUnwrapSol, dynamicComputeUnitLimit };
+    if (prioritizationFeeLamports != null) body.prioritizationFeeLamports = prioritizationFeeLamports;
+    try {
+      const res = await axios.post(JUPITER_SWAP, body, { timeout: 15000 });
+      if (!res.data || res.data.error) {
+        this.stats.lastError = JSON.stringify(res.data?.error || 'no data');
+        log.warn(`[jupiter] swap tx error: ${this.stats.lastError}`);
+        return null;
+      }
+      this._noteSuccess();
+      return res.data;
+    } catch (e) {
+      this.stats.lastError = e.message;
+      log.warn(`[jupiter] swap tx failed: ${e.message}`);
+      return null;
+    }
   }
 }
 

@@ -26,7 +26,8 @@ testDb.exec(`
   CREATE TABLE IF NOT EXISTS trade_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts INTEGER NOT NULL, arb_id INTEGER,
-    mode TEXT NOT NULL, status TEXT NOT NULL, mint_in TEXT NOT NULL, mint_out TEXT NOT NULL,
+    mode TEXT NOT NULL, status TEXT NOT NULL, strategy TEXT,
+    mint_in TEXT NOT NULL, mint_out TEXT NOT NULL,
     amount_in_raw TEXT NOT NULL, amount_out_raw TEXT,
     amount_in_sol REAL, amount_out_sol REAL,
     amount_in_usd REAL, amount_out_usd REAL,
@@ -40,7 +41,7 @@ testDb.exec(`
 `);
 const stmts = {
   insertArbCandidate: testDb.prepare(`INSERT INTO arb_candidates (ts, pair_key, mint0, mint1, cheap_dex, cheap_price, cheap_pool, cheap_tvl_usd, expensive_dex, expensive_price, expensive_pool, expensive_tvl_usd, gap_bps) VALUES (@ts, @pair_key, @mint0, @mint1, @cheap_dex, @cheap_price, @cheap_pool, @cheap_tvl_usd, @expensive_dex, @expensive_price, @expensive_pool, @expensive_tvl_usd, @gap_bps)`),
-  insertTradeLog: testDb.prepare(`INSERT INTO trade_log (ts, arb_id, mode, status, mint_in, mint_out, amount_in_raw, amount_out_raw, amount_in_sol, amount_out_sol, amount_in_usd, amount_out_usd, gross_profit_sol, gross_profit_usd, net_profit_sol, net_profit_usd, jito_tip_lamports, jito_tip_sol, priority_fee_lamports, gas_lamports, gas_sol, sol_usd_at_exec, net_roi_pct, tx_signature, error_msg, quote_json, raw_json) VALUES (@ts, @arb_id, @mode, @status, @mint_in, @mint_out, @amount_in_raw, @amount_out_raw, @amount_in_sol, @amount_out_sol, @amount_in_usd, @amount_out_usd, @gross_profit_sol, @gross_profit_usd, @net_profit_sol, @net_profit_usd, @jito_tip_lamports, @jito_tip_sol, @priority_fee_lamports, @gas_lamports, @gas_sol, @sol_usd_at_exec, @net_roi_pct, @tx_signature, @error_msg, @quote_json, @raw_json)`),
+  insertTradeLog: testDb.prepare(`INSERT INTO trade_log (ts, arb_id, mode, status, strategy, mint_in, mint_out, amount_in_raw, amount_out_raw, amount_in_sol, amount_out_sol, amount_in_usd, amount_out_usd, gross_profit_sol, gross_profit_usd, net_profit_sol, net_profit_usd, jito_tip_lamports, jito_tip_sol, priority_fee_lamports, gas_lamports, gas_sol, sol_usd_at_exec, net_roi_pct, tx_signature, error_msg, quote_json, raw_json) VALUES (@ts, @arb_id, @mode, @status, @strategy, @mint_in, @mint_out, @amount_in_raw, @amount_out_raw, @amount_in_sol, @amount_out_sol, @amount_in_usd, @amount_out_usd, @gross_profit_sol, @gross_profit_usd, @net_profit_sol, @net_profit_usd, @jito_tip_lamports, @jito_tip_sol, @priority_fee_lamports, @gas_lamports, @gas_sol, @sol_usd_at_exec, @net_roi_pct, @tx_signature, @error_msg, @quote_json, @raw_json)`),
   markArbExecuted: testDb.prepare(`UPDATE arb_candidates SET executed=1, trade_id=@trade_id WHERE id=@arb_id`),
   recentArbCandidates: testDb.prepare(`SELECT * FROM arb_candidates ORDER BY ts DESC LIMIT ?`),
 };

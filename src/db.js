@@ -195,6 +195,7 @@ function init() {
       arb_id INTEGER,
       mode TEXT NOT NULL,                  -- 'dry_run' | 'live'
       status TEXT NOT NULL,                -- 'simulated' | 'submitted' | 'confirmed' | 'failed' | 'skipped'
+      strategy TEXT,                       -- 'direct_2dex' | 'round_trip' (v0.8.1+)
       mint_in TEXT NOT NULL,               -- input mint (WSOL for SOL-based arb)
       mint_out TEXT NOT NULL,              -- output mint (WSOL after round-trip)
       amount_in_raw TEXT NOT NULL,         -- input amount in raw units (lamports for SOL)
@@ -219,9 +220,17 @@ function init() {
       quote_json TEXT,
       raw_json TEXT
     );
+  `);
+  // Idempotent ALTER for strategy column (BEFORE we touch CREATE INDEX for it)
+  const tradeCols = db.prepare("PRAGMA table_info(trade_log)").all();
+  if (!tradeCols.some(c => c.name === 'strategy')) {
+    db.exec('ALTER TABLE trade_log ADD COLUMN strategy TEXT');
+  }
+  db.exec(`
     CREATE INDEX IF NOT EXISTS idx_trade_log_ts ON trade_log(ts);
     CREATE INDEX IF NOT EXISTS idx_trade_log_status ON trade_log(status);
     CREATE INDEX IF NOT EXISTS idx_trade_log_arb ON trade_log(arb_id);
+    CREATE INDEX IF NOT EXISTS idx_trade_log_strategy ON trade_log(strategy);
   `);
 
   // Prepared statements (per snipetrench pattern — pre-compile for speed)
@@ -314,7 +323,7 @@ function init() {
     `),
     insertTradeLog: db.prepare(`
       INSERT INTO trade_log (
-        ts, arb_id, mode, status,
+        ts, arb_id, mode, status, strategy,
         mint_in, mint_out, amount_in_raw, amount_out_raw,
         amount_in_sol, amount_out_sol, amount_in_usd, amount_out_usd,
         gross_profit_sol, gross_profit_usd, net_profit_sol, net_profit_usd,
@@ -322,7 +331,7 @@ function init() {
         sol_usd_at_exec, net_roi_pct,
         tx_signature, error_msg, quote_json, raw_json
       ) VALUES (
-        @ts, @arb_id, @mode, @status,
+        @ts, @arb_id, @mode, @status, @strategy,
         @mint_in, @mint_out, @amount_in_raw, @amount_out_raw,
         @amount_in_sol, @amount_out_sol, @amount_in_usd, @amount_out_usd,
         @gross_profit_sol, @gross_profit_usd, @net_profit_sol, @net_profit_usd,

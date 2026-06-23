@@ -152,11 +152,12 @@ async function main() {
 
   log.info('[main] all detectors running. Ctrl+C to stop.');
 
-  // Install signal handlers (closure-scoped to hasB/hasC)
+  // Install signal handlers (safe — operates on module-level detector refs)
   process.removeAllListeners('SIGINT');
   process.removeAllListeners('SIGTERM');
-  process.on('SIGINT', gracefulShutdown('SIGINT'));
-  process.on('SIGTERM', gracefulShutdown('SIGTERM'));
+  setupShutdownHandlers();
+
+  // Periodic stats summary
 
   // --- Periodic stats notif + token list refresh ---
   let lastStatsNotif = 0;
@@ -279,20 +280,22 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
-// Graceful shutdown
-function gracefulShutdown(signal) {
-  return () => {
+// Graceful shutdown — installed in main() (needs closure over detectors)
+function setupShutdownHandlers() {
+  const handlers = ['SIGINT', 'SIGTERM'];
+  const cleanup = (signal) => {
     log.info(`[main] ${signal} received, stopping detectors...`);
-    if (hasB) newPoolMonitor.stop();
-    if (hasC) pumpfunMonitor.stop();
-    if (hasB || hasC) decoderWorker.stop();
-    if (hasD) poolSubscription.stop();
-    if (hasE) arbDetector.stop();
+    // best-effort: try to stop everything we know about
+    try { if (typeof newPoolMonitor !== 'undefined') newPoolMonitor.stop(); } catch (e) {}
+    try { if (typeof pumpfunMonitor !== 'undefined') pumpfunMonitor.stop(); } catch (e) {}
+    try { if (typeof decoderWorker !== 'undefined') decoderWorker.stop(); } catch (e) {}
+    try { if (typeof poolSubscription !== 'undefined') poolSubscription.stop(); } catch (e) {}
+    try { if (typeof arbDetector !== 'undefined') arbDetector.stop(); } catch (e) {}
+    try { if (typeof coingecko !== 'undefined') coingecko.stop && coingecko.stop(); } catch (e) {}
     setTimeout(() => process.exit(0), 1000);
   };
+  for (const sig of handlers) process.on(sig, () => cleanup(sig));
 }
-// Note: these handlers are set inside main() because `hasB`/`hasC` are closure-scoped.
-// To keep behavior simple & safe, install them in main() below.
 
 
 main().catch(e => {
