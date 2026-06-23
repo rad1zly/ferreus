@@ -139,6 +139,7 @@ function findInstructionByDiscriminator(tx) {
 
   let newPoolHit = null;
   let falsePositiveHit = null;
+  const allHits = [];
 
   for (const c of candidates) {
     const hex = decodeBase64ToHex(c.data);
@@ -148,6 +149,7 @@ function findInstructionByDiscriminator(tx) {
     // IDL-based lookup (authoritative)
     const idlEntry = idl.lookup(c.programId, disc);
     if (idlEntry) {
+      allHits.push({ disc, name: idlEntry.name, program: idlEntry.programName });
       if (idlEntry.isNewPool) {
         newPoolHit = {
           discriminator: disc,
@@ -169,7 +171,7 @@ function findInstructionByDiscriminator(tx) {
     }
   }
 
-  return { newPoolHit, falsePositiveHit };
+  return { newPoolHit, falsePositiveHit, allHits };
 }
 
 function computeTokenChanges(tx) {
@@ -231,7 +233,12 @@ async function decodeNewPool(sig) {
     return { decoded: false, reason: `false-positive:${result.falsePositiveHit.instructionName}` };
   }
   if (!result.newPoolHit) {
-    return { decoded: false, reason: 'no-pool-instruction' };
+    return {
+      decoded: false,
+      reason: 'no-pool-instruction',
+      discriminator: result.allHits?.[0]?.disc || null,
+      hitCount: result.allHits?.length || 0,
+    };
   }
 
   // Real new pool! Derive mints + amounts from token balance changes

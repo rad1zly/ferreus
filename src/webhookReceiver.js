@@ -95,7 +95,6 @@ async function processEvent(evt) {
     stats.filtered += 1;
     return; // Skip — SWAP/TRANSFER/etc.
   }
-
   // Throttle to stay under RPC rate limit
   const now = Date.now();
   const elapsed = now - lastDecodeTs;
@@ -140,11 +139,11 @@ async function processEvent(evt) {
     } else {
       stats.decoded += 1;
       stats.falsePositives += 1;
-      // Log discriminator for debugging
-      if (recentSamples.length < 200) {
-        const ids = decoder.findInstructionByDiscriminator ? null : null;
-        // We can't easily get discriminators here; just log the result
-        log.debug(`[webhook] ${sig.slice(0, 16)}... ${result.reason || 'no-pool'}`);
+      // Log discriminator info for debugging
+      if (result.discriminator) {
+        log.debug(`[webhook] ${sig.slice(0, 16)}... disc=${result.discriminator} reason=${result.reason}`);
+      } else if (result.reason && !result.reason.startsWith('no-pool-instruction')) {
+        log.debug(`[webhook] ${sig.slice(0, 16)}... ${result.reason}`);
       }
     }
   } catch (e) {
