@@ -14,6 +14,10 @@ const PROGRAMS = {
   ORCA_WHIRL:    { name: 'orca_whirlpool',address: 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc' },
   METEORA_DAMM:  { name: 'meteora_damm_v2',address: 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG' },
   METEORA_DLMM:  { name: 'meteora_dlmm',  address: 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo' },
+  // Launchpads (high-signal for new pool creation):
+  RAYDIUM_LAUNCHPAD:  { name: 'raydium_launchpad',  address: 'LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj' },
+  METEORA_DBC:        { name: 'meteora_dbc',        address: 'dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN' },
+  MOONSHOT:           { name: 'moonshot',           address: 'MoonCVVNZFSYkqNXP6bxHLPL6QQJiMagDL3qcqUQTrG' },
 };
 
 class NewPoolMonitor {

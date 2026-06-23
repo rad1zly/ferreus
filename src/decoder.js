@@ -25,6 +25,7 @@
 
 const axios = require('axios');
 const log = require('./logger');
+const idl = require('./idlRegistry');
 
 const HELIUS_RPC = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com/';
 
@@ -143,27 +144,32 @@ function findInstructionByDiscriminator(tx) {
     const hex = decodeBase64ToHex(c.data);
     if (!hex || hex.length < 16) continue; // need at least 8 bytes
     const disc = hex.slice(0, 16);
-    if (NEW_POOL_DISCRIMINATORS.has(disc)) {
-      const programKey = Object.keys(PROGRAMS).find(k => PROGRAMS[k] === c.programId);
-      newPoolHit = {
-        discriminator: disc,
-        instructionName: INSTRUCTION_NAMES[disc] || 'unknown',
-        programId: c.programId,
-        programName: programKey ? programKey.toLowerCase() : 'unknown',
-        accountIndexes: c.accountIndexes,
-        accountKeys: accountKeys,
-      };
-      break; // first match wins
-    }
-    if (FALSE_POSITIVE_DISCRIMINATORS.has(disc)) {
-      falsePositiveHit = {
-        discriminator: disc,
-        instructionName: INSTRUCTION_NAMES[disc] || 'unknown',
-      };
+
+    // IDL-based lookup (authoritative)
+    const idlEntry = idl.lookup(c.programId, disc);
+    if (idlEntry) {
+      if (idlEntry.isNewPool) {
+        newPoolHit = {
+          discriminator: disc,
+          instructionName: idlEntry.name,
+          programId: c.programId,
+          programName: idlEntry.programName,
+          accountIndexes: c.accountIndexes,
+          accountKeys: accountKeys,
+          args: idlEntry.args,
+        };
+        break; // first match wins
+      }
+      if (idlEntry.isAddLiquidity) {
+        falsePositiveHit = {
+          discriminator: disc,
+          instructionName: idlEntry.name,
+        };
+      }
     }
   }
 
-  return { newPoolHit: null, falsePositiveHit: null };
+  return { newPoolHit, falsePositiveHit };
 }
 
 function computeTokenChanges(tx) {
