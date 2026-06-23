@@ -7,6 +7,7 @@ const Detector = require('./detector');
 const newPoolMonitor = require('./newPoolMonitor');
 const pumpfunMonitor = require('./pumpfunMonitor');
 const decoderWorker = require('./decoderWorker');
+const poolSubscription = require('./poolSubscription');
 const jitoTip = require('./jitoTip');
 const coingecko = require('./coingecko');
 const telegramBot = require('./telegramBot');
@@ -18,10 +19,12 @@ async function main() {
   const hasA = enabled.has('dex_dex');
   const hasB = enabled.has('new_pool');
   const hasC = enabled.has('pumpfun');
+  const hasD = enabled.has('pool_watch');
   const enabledList = [
     hasA && 'A:DEX-DEX gap',
     hasB && 'B:new-pool events',
     hasC && 'C:Pumpfun migration',
+    hasD && 'D:pool-watch (WSS)',
   ].filter(Boolean).join(' | ') || 'NONE';
 
   log.info(`🔥 Ferreus — Solana Arbitrage Detector`);
@@ -83,6 +86,14 @@ async function main() {
     decoderWorker.start();
   } else {
     log.info('[main] Decoder worker DISABLED (no B/C detectors active)');
+  }
+
+  // --- Detector D: pool-watch (WSS subscription) — Phase Pool-1 of dead-pool MEV ---
+  if (hasD) {
+    poolSubscription.attachDb(database);
+    await poolSubscription.start();
+  } else {
+    log.info('[main] Detector D (pool-watch) DISABLED — set ENABLED_DETECTORS=pool_watch to enable');
   }
 
   // --- Auxiliary signals (CoinGecko trending, Jito tip floor) ---
@@ -191,7 +202,8 @@ function gracefulShutdown(signal) {
     if (hasB) newPoolMonitor.stop();
     if (hasC) pumpfunMonitor.stop();
     if (hasB || hasC) decoderWorker.stop();
-    setTimeout(() => process.exit(0), 500);
+    if (hasD) poolSubscription.stop();
+    setTimeout(() => process.exit(0), 1000);
   };
 }
 // Note: these handlers are set inside main() because `hasB`/`hasC` are closure-scoped.

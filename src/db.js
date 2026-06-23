@@ -122,6 +122,36 @@ function init() {
       value TEXT NOT NULL,
       updated_ts INTEGER NOT NULL
     );
+
+    -- Pool state (Pool-1: WSS subscription)
+    -- Per pool account on-chain state. Updated on every WSS notification.
+    -- Used by Phase Pool-2 (cross-DEX compare) to detect arb opportunities.
+    CREATE TABLE IF NOT EXISTS pool_state (
+      pubkey TEXT PRIMARY KEY,
+      dex TEXT NOT NULL,
+      mint_a TEXT NOT NULL,
+      mint_b TEXT NOT NULL,
+      vault_a TEXT,
+      vault_b TEXT,
+      decimals_a INTEGER,
+      decimals_b INTEGER,
+      reserve_a_native TEXT,
+      reserve_b_native TEXT,
+      tvl_usd REAL,
+      price_native REAL,
+      price_usd REAL,
+      fee_bps INTEGER,
+      lp_supply TEXT,
+      sqrt_price_x64 TEXT,
+      liquidity TEXT,
+      tick_current INTEGER,
+      bin_step INTEGER,
+      ts INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_pool_state_pair ON pool_state(mint_a, mint_b);
+    CREATE INDEX IF NOT EXISTS idx_pool_state_dex ON pool_state(dex);
+    CREATE INDEX IF NOT EXISTS idx_pool_state_ts ON pool_state(ts);
   `);
 
   // Prepared statements (per snipetrench pattern — pre-compile for speed)
@@ -166,6 +196,40 @@ function init() {
         decode_attempts = decode_attempts + 1
       WHERE signature = @signature
     `),
+    upsertPoolState: db.prepare(`
+      INSERT INTO pool_state (
+        pubkey, dex, mint_a, mint_b, vault_a, vault_b,
+        decimals_a, decimals_b, reserve_a_native, reserve_b_native,
+        tvl_usd, price_native, price_usd, fee_bps,
+        lp_supply, sqrt_price_x64, liquidity, tick_current, bin_step, ts
+      ) VALUES (
+        @pubkey, @dex, @mint_a, @mint_b, @vault_a, @vault_b,
+        @decimals_a, @decimals_b, @reserve_a_native, @reserve_b_native,
+        @tvl_usd, @price_native, @price_usd, @fee_bps,
+        @lp_supply, @sqrt_price_x64, @liquidity, @tick_current, @bin_step, @ts
+      )
+      ON CONFLICT(pubkey) DO UPDATE SET
+        dex = excluded.dex,
+        mint_a = excluded.mint_a,
+        mint_b = excluded.mint_b,
+        vault_a = excluded.vault_a,
+        vault_b = excluded.vault_b,
+        decimals_a = excluded.decimals_a,
+        decimals_b = excluded.decimals_b,
+        reserve_a_native = excluded.reserve_a_native,
+        reserve_b_native = excluded.reserve_b_native,
+        tvl_usd = excluded.tvl_usd,
+        price_native = excluded.price_native,
+        price_usd = excluded.price_usd,
+        fee_bps = excluded.fee_bps,
+        lp_supply = excluded.lp_supply,
+        sqrt_price_x64 = excluded.sqrt_price_x64,
+        liquidity = excluded.liquidity,
+        tick_current = excluded.tick_current,
+        bin_step = excluded.bin_step,
+        ts = excluded.ts
+    `),
+    countPoolState: db.prepare(`SELECT COUNT(*) AS c FROM pool_state`),
     countUndecoded: db.prepare(`
       SELECT COUNT(*) AS c FROM new_pools
       WHERE decoded = 0 AND decode_attempts < 3
