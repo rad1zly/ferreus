@@ -8,6 +8,7 @@ const newPoolMonitor = require('./newPoolMonitor');
 const pumpfunMonitor = require('./pumpfunMonitor');
 const decoderWorker = require('./decoderWorker');
 const poolSubscription = require('./poolSubscription');
+const arbDetector = require('./arbDetector');
 const jitoTip = require('./jitoTip');
 const coingecko = require('./coingecko');
 const telegramBot = require('./telegramBot');
@@ -20,11 +21,13 @@ async function main() {
   const hasB = enabled.has('new_pool');
   const hasC = enabled.has('pumpfun');
   const hasD = enabled.has('pool_watch');
+  const hasE = enabled.has('pool_arb');
   const enabledList = [
     hasA && 'A:DEX-DEX gap',
     hasB && 'B:new-pool events',
     hasC && 'C:Pumpfun migration',
     hasD && 'D:pool-watch (WSS)',
+    hasE && 'E:cross-DEX arb',
   ].filter(Boolean).join(' | ') || 'NONE';
 
   log.info(`🔥 Ferreus — Solana Arbitrage Detector`);
@@ -50,6 +53,9 @@ async function main() {
   // --- Detector A: DEX-DEX gap (existing, async polling inside its own loop) ---
   const detector = new Detector(database);
   await detector.refreshTokenList();
+
+  // Pre-load decimals for arb detector (covers Orca Whirlpool which doesn't store decimals on-chain)
+  arbDetector.setDecimalsBulk(detector.tokens);
 
   // Hook notifier into logOpportunity
   const origLog = detector.logOpportunity.bind(detector);
@@ -89,11 +95,19 @@ async function main() {
   }
 
   // --- Detector D: pool-watch (WSS subscription) — Phase Pool-1 of dead-pool MEV ---
+  // Detector E (cross-DEX arb) starts automatically with D (uses same data)
   if (hasD) {
     poolSubscription.attachDb(database);
     await poolSubscription.start();
+    if (hasE) arbDetector.start();
   } else {
     log.info('[main] Detector D (pool-watch) DISABLED — set ENABLED_DETECTORS=pool_watch to enable');
+    if (hasE) {
+      log.warn('[main] Detector E (pool-arb) requires Detector D — starting pool-watch too');
+      poolSubscription.attachDb(database);
+      await poolSubscription.start();
+      arbDetector.start();
+    }
   }
 
   // --- Auxiliary signals (CoinGecko trending, Jito tip floor) ---
@@ -149,6 +163,7 @@ async function main() {
       if (Date.now() - lastTokenListRefresh > config.TOKEN_LIST_REFRESH_MS) {
         try {
           await detector.refreshTokenList();
+          arbDetector.setDecimalsBulk(detector.tokens);
           lastTokenListRefresh = Date.now();
         } catch (e) {
           log.warn(`[main] token list refresh: ${e.message}`);
@@ -173,6 +188,8 @@ async function main() {
       if (notifier.isReady() && Date.now() - lastStatsNotif > STATS_INTERVAL) {
         const npStats = hasB ? newPoolMonitor.getStats() : null;
         const pfStats = hasC ? pumpfunMonitor.getStats() : null;
+        const poolStats = hasD ? poolSubscription.getStats() : null;
+        const arbStats = (hasD && hasE) ? arbDetector.getStats() : null;
         let msg = `📊 ${Math.round((Date.now() - startTs) / 60000)}min uptime\n` +
           `Detector A (DEX-DEX): ${totalOpps} opps`;
         if (npStats) {
@@ -180,6 +197,12 @@ async function main() {
         }
         if (pfStats) {
           msg += `\nDetector C (pumpfun):  ${pfStats.migrationEvents} migrations from ${pfStats.sigsSeen} sigs`;
+        }
+        if (poolStats) {
+          msg += `\nDetector D (pool-watch): ${poolStats.events} events, ${poolStats.decoded} decoded, ${poolStats.errors} errs`;
+        }
+        if (arbStats) {
+          msg += `\nDetector E (pool-arb): ${arbStats.gapsLogged} arbs logged, ${arbStats.pairsTracked} pairs tracked`;
         }
         await notifier.info(msg);
         lastStatsNotif = Date.now();
@@ -203,6 +226,7 @@ function gracefulShutdown(signal) {
     if (hasC) pumpfunMonitor.stop();
     if (hasB || hasC) decoderWorker.stop();
     if (hasD) poolSubscription.stop();
+    if (hasE) arbDetector.stop();
     setTimeout(() => process.exit(0), 1000);
   };
 }

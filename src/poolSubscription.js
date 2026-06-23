@@ -17,6 +17,7 @@ const { Connection, PublicKey } = require('@solana/web3.js');
 const log = require('./logger');
 const decoder = require('./poolDecoder');
 const config = require('./config');
+const arbDetector = require('./arbDetector');
 
 const DEFAULT_WSS = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com/';
 
@@ -51,6 +52,7 @@ class PoolSubscription {
 
   attachDb(database) {
     this._db = database;
+    arbDetector.attachDb(database);
   }
 
   async start() {
@@ -148,6 +150,26 @@ class PoolSubscription {
         bin_step: decoded.binStep ?? null,
         ts: Date.now(),
       });
+
+      // Cross-DEX gap check (Phase Pool-2) — fire-and-forget, uses in-memory index
+      try {
+        arbDetector.checkPool({
+          pubkey: accountId.toBase58(),
+          dex: decoded.dex,
+          mintA: decoded.mintA,
+          mintB: decoded.mintB,
+          decimalsA: decoded.decimalsA,
+          decimalsB: decoded.decimalsB,
+          priceNative: decoded.priceNative,
+          ts: Date.now(),
+        });
+      } catch (e) {
+        // Non-fatal — log once per 100 errors
+        if (this._arbErrCount === undefined) this._arbErrCount = 0;
+        if (this._arbErrCount++ % 100 === 0) {
+          log.warn(`[pool-watch] arb check error: ${e.message}`);
+        }
+      }
     } catch (e) {
       this.stats.errors++;
       log.warn(`[pool-watch] decode error: ${e.message}`);

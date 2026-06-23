@@ -53,9 +53,14 @@ module.exports = {
   TOKEN_LIST_REFRESH_MS: envInt('TOKEN_LIST_REFRESH_MS', 3600000),
 
   // Enabled detectors (comma-separated). Default: dex_dex only.
-  // Options: dex_dex, new_pool, pumpfun
+  // Options: dex_dex, new_pool, pumpfun, pool_watch, pool_arb
   ENABLED_DETECTORS: (process.env.ENABLED_DETECTORS || 'dex_dex')
     .split(',').map(s => s.trim()).filter(Boolean),
+
+  // Cross-DEX arb detector (Phase Pool-2)
+  ARB_MIN_GAP_BPS: envInt('ARB_MIN_GAP_BPS', 30),        // 0.3% default
+  ARB_COOLDOWN_MS: envInt('ARB_COOLDOWN_MS', 60000),     // 1 min per pair
+  ARB_MIN_DECIMALS_OK: envBool('ARB_MIN_DECIMALS_OK', true),
 
   // Storage
   DB_PATH: process.env.DB_PATH || path.join(ROOT, 'data', 'ferreus.db'),

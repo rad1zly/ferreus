@@ -152,6 +152,28 @@ function init() {
     CREATE INDEX IF NOT EXISTS idx_pool_state_pair ON pool_state(mint_a, mint_b);
     CREATE INDEX IF NOT EXISTS idx_pool_state_dex ON pool_state(dex);
     CREATE INDEX IF NOT EXISTS idx_pool_state_ts ON pool_state(ts);
+
+    -- Arb candidates (Pool-2: cross-DEX gap detection)
+    -- One row per logged opportunity. Same pair can have multiple rows over time
+    -- (cooldown controls spam); use pair_key + ts for dedup.
+    CREATE TABLE IF NOT EXISTS arb_candidates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts INTEGER NOT NULL,
+      pair_key TEXT NOT NULL,           -- sorted mint0:mint1
+      mint0 TEXT NOT NULL,               -- smaller mint (lexicographic)
+      mint1 TEXT NOT NULL,               -- larger mint
+      cheap_dex TEXT NOT NULL,
+      cheap_price REAL NOT NULL,         -- display price of mint1 in mint0
+      cheap_pool TEXT NOT NULL,          -- pool pubkey
+      expensive_dex TEXT NOT NULL,
+      expensive_price REAL NOT NULL,
+      expensive_pool TEXT NOT NULL,
+      gap_bps REAL NOT NULL,
+      notified INTEGER DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_arb_candidates_ts ON arb_candidates(ts);
+    CREATE INDEX IF NOT EXISTS idx_arb_candidates_pair ON arb_candidates(pair_key);
+    CREATE INDEX IF NOT EXISTS idx_arb_candidates_gap ON arb_candidates(gap_bps);
   `);
 
   // Prepared statements (per snipetrench pattern — pre-compile for speed)
@@ -229,6 +251,21 @@ function init() {
         bin_step = excluded.bin_step,
         ts = excluded.ts
     `),
+    insertArbCandidate: db.prepare(`
+      INSERT INTO arb_candidates (
+        ts, pair_key, mint0, mint1,
+        cheap_dex, cheap_price, cheap_pool,
+        expensive_dex, expensive_price, expensive_pool,
+        gap_bps
+      ) VALUES (
+        @ts, @pair_key, @mint0, @mint1,
+        @cheap_dex, @cheap_price, @cheap_pool,
+        @expensive_dex, @expensive_price, @expensive_pool,
+        @gap_bps
+      )
+    `),
+    countArbCandidates: db.prepare(`SELECT COUNT(*) AS c FROM arb_candidates`),
+    recentArbCandidates: db.prepare(`SELECT * FROM arb_candidates ORDER BY ts DESC LIMIT ?`),
     countPoolState: db.prepare(`SELECT COUNT(*) AS c FROM pool_state`),
     countUndecoded: db.prepare(`
       SELECT COUNT(*) AS c FROM new_pools
