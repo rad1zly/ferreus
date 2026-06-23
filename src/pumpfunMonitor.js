@@ -25,7 +25,7 @@ class PumpfunMonitor {
       sigsInserted: 0,
       errors: 0,
     };
-    this.sigsPerProgramPerTick = 3;
+    this.sigsPerProgramPerTick = 1;
   }
 
   attachDb(database) {
@@ -92,7 +92,7 @@ class PumpfunMonitor {
   start() {
     if (this.running) return;
     this.running = true;
-    const interval = parseInt(process.env.POLL_INTERVAL_MS || '10000', 10);
+    const interval = parseInt(process.env.POLL_INTERVAL_MS || '20000', 10);
     log.info(`[pumpfun] monitor started — collecting sigs every ${interval}ms (decoder worker filters for real migrations)`);
     const loop = async () => {
       if (!this.running) return;

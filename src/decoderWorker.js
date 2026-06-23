@@ -172,7 +172,7 @@ class DecoderWorker {
       if (!this.running) return;
       try { await this.tick(); }
       catch (e) { log.error(`[decoder-worker] tick error: ${e.message}`); }
-      if (this.running) this.timer = setTimeout(loop, 10000);
+      if (this.running) this.timer = setTimeout(loop, 15000); // 15s — back off to avoid Helius 10 RPS limit
     };
     loop();
   }

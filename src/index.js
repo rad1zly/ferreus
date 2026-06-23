@@ -8,18 +8,29 @@ const newPoolMonitor = require('./newPoolMonitor');
 const pumpfunMonitor = require('./pumpfunMonitor');
 const decoderWorker = require('./decoderWorker');
 const jitoTip = require('./jitoTip');
+const coingecko = require('./coingecko');
 const telegramBot = require('./telegramBot');
 const notifier = require('./notifier');
 const safety = require('./safety');
 
 async function main() {
-  log.info('🔥 Ferreus — Solana Arbitrage Detector v0.2.0 (dual-detector)');
+  const enabled = new Set(config.ENABLED_DETECTORS);
+  const hasA = enabled.has('dex_dex');
+  const hasB = enabled.has('new_pool');
+  const hasC = enabled.has('pumpfun');
+  const enabledList = [
+    hasA && 'A:DEX-DEX gap',
+    hasB && 'B:new-pool events',
+    hasC && 'C:Pumpfun migration',
+  ].filter(Boolean).join(' | ') || 'NONE';
+
+  log.info(`🔥 Ferreus — Solana Arbitrage Detector`);
   log.info(
     `Mode: ${config.DRY_RUN ? 'DRY_RUN' : 'LIVE'} | ` +
     `Poll: ${config.POLL_INTERVAL_MS}ms | ` +
     `Min gap: ${config.MIN_GAP_BPS}bps | Min TVL: $${config.MIN_TVL_USD}`
   );
-  log.info('Detectors: A=DEX-DEX gap | B=new-pool events | C=Pumpfun migration');
+  log.info(`Enabled detectors: ${enabledList}`);
 
   // --- DB ---
   const database = db.init();
@@ -53,14 +64,26 @@ async function main() {
   };
 
   // --- Detectors B + C: event-driven monitors (self-managed timers) ---
-  newPoolMonitor.attachDb(database);
-  pumpfunMonitor.attachDb(database);
-  newPoolMonitor.start();
-  pumpfunMonitor.start();
+  if (hasB) {
+    newPoolMonitor.attachDb(database);
+    newPoolMonitor.start();
+  } else {
+    log.info('[main] Detector B (new-pool) DISABLED — set ENABLED_DETECTORS=new_pool to enable');
+  }
+  if (hasC) {
+    pumpfunMonitor.attachDb(database);
+    pumpfunMonitor.start();
+  } else {
+    log.info('[main] Detector C (pumpfun) DISABLED — set ENABLED_DETECTORS=pumpfun to enable');
+  }
 
-  // --- P1 Decoder worker: pick up undecoded new-pool events ---
-  decoderWorker.attachDb(database);
-  decoderWorker.start();
+  // --- P1 Decoder worker: only run if B or C active ---
+  if (hasB || hasC) {
+    decoderWorker.attachDb(database);
+    decoderWorker.start();
+  } else {
+    log.info('[main] Decoder worker DISABLED (no B/C detectors active)');
+  }
 
   // --- Auxiliary signals (CoinGecko trending, Jito tip floor) ---
   // CoinGecko: refresh every 5 min — slow signal, mostly informational
@@ -87,12 +110,18 @@ async function main() {
   if (notifier.isReady()) {
     await notifier.info(
       `Ferreus online — DRY_RUN=${config.DRY_RUN}, ` +
-      `poll ${config.POLL_INTERVAL_MS}ms, ${detector.tokens.length} tokens, ` +
-      `monitoring 6 DEX programs + Pumpfun migration, P1 decoder active`
+      `poll ${config.POLL_INTERVAL_MS}ms, ${detector.tokens.length} tokens\n` +
+      `Detectors: ${enabledList}`
     );
   }
 
   log.info('[main] all detectors running. Ctrl+C to stop.');
+
+  // Install signal handlers (closure-scoped to hasB/hasC)
+  process.removeAllListeners('SIGINT');
+  process.removeAllListeners('SIGTERM');
+  process.on('SIGINT', gracefulShutdown('SIGINT'));
+  process.on('SIGTERM', gracefulShutdown('SIGTERM'));
 
   // --- Periodic stats notif + token list refresh ---
   let lastStatsNotif = 0;
@@ -131,14 +160,17 @@ async function main() {
 
       // Periodic stats summary
       if (notifier.isReady() && Date.now() - lastStatsNotif > STATS_INTERVAL) {
-        const npStats = newPoolMonitor.getStats();
-        const pfStats = pumpfunMonitor.getStats();
-        await notifier.info(
-          `📊 ${Math.round((Date.now() - startTs) / 60000)}min uptime\n` +
-          `Detector A (DEX-DEX): ${totalOpps} opps\n` +
-          `Detector B (new-pool): ${npStats.createEvents} events from ${npStats.sigsSeen} sigs (${npStats.ticks} ticks)\n` +
-          `Detector C (pumpfun):  ${pfStats.migrationEvents} migrations from ${pfStats.sigsSeen} sigs`
-        );
+        const npStats = hasB ? newPoolMonitor.getStats() : null;
+        const pfStats = hasC ? pumpfunMonitor.getStats() : null;
+        let msg = `📊 ${Math.round((Date.now() - startTs) / 60000)}min uptime\n` +
+          `Detector A (DEX-DEX): ${totalOpps} opps`;
+        if (npStats) {
+          msg += `\nDetector B (new-pool): ${npStats.createEvents} events from ${npStats.sigsSeen} sigs (${npStats.ticks} ticks)`;
+        }
+        if (pfStats) {
+          msg += `\nDetector C (pumpfun):  ${pfStats.migrationEvents} migrations from ${pfStats.sigsSeen} sigs`;
+        }
+        await notifier.info(msg);
         lastStatsNotif = Date.now();
       }
     } catch (e) {
@@ -153,20 +185,18 @@ function sleep(ms) {
 }
 
 // Graceful shutdown
-process.on('SIGINT', async () => {
-  log.info('[main] SIGINT received, stopping detectors...');
-  newPoolMonitor.stop();
-  pumpfunMonitor.stop();
-  decoderWorker.stop();
-  setTimeout(() => process.exit(0), 500);
-});
-process.on('SIGTERM', async () => {
-  log.info('[main] SIGTERM received, stopping detectors...');
-  newPoolMonitor.stop();
-  pumpfunMonitor.stop();
-  decoderWorker.stop();
-  setTimeout(() => process.exit(0), 500);
-});
+function gracefulShutdown(signal) {
+  return () => {
+    log.info(`[main] ${signal} received, stopping detectors...`);
+    if (hasB) newPoolMonitor.stop();
+    if (hasC) pumpfunMonitor.stop();
+    if (hasB || hasC) decoderWorker.stop();
+    setTimeout(() => process.exit(0), 500);
+  };
+}
+// Note: these handlers are set inside main() because `hasB`/`hasC` are closure-scoped.
+// To keep behavior simple & safe, install them in main() below.
+
 
 main().catch(e => {
   log.error(`[main] fatal: ${e.message}`);

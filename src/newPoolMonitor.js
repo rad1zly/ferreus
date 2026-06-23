@@ -35,8 +35,8 @@ class NewPoolMonitor {
       errors: 0,
     };
     // Each sig = 1 getSignaturesForAddress + 1 getTransaction = 2 RPC calls.
-    // 6 programs × 3 sigs = 18 calls per tick. At 5s = 3.6 RPS — safe.
-    this.sigsPerProgramPerTick = 3;
+    // 6 programs × 1 sig = 6 calls per tick. At 20s = 0.3 RPS — well under Helius 10 RPS.
+    this.sigsPerProgramPerTick = 1;
   }
 
   attachDb(database) {
@@ -113,7 +113,7 @@ class NewPoolMonitor {
   start() {
     if (this.running) return;
     this.running = true;
-    const interval = parseInt(process.env.POLL_INTERVAL_MS || '10000', 10);
+    const interval = parseInt(process.env.POLL_INTERVAL_MS || '20000', 10);
     log.info(`[new-pool] monitor started — collecting all sigs from ${Object.keys(PROGRAMS).length} programs every ${interval}ms (decoder worker filters for real pools)`);
     const loop = async () => {
       if (!this.running) return;

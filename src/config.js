@@ -52,6 +52,11 @@ module.exports = {
   TRADE_SIZE_USD: envInt('TRADE_SIZE_USD', 1000),
   TOKEN_LIST_REFRESH_MS: envInt('TOKEN_LIST_REFRESH_MS', 3600000),
 
+  // Enabled detectors (comma-separated). Default: dex_dex only.
+  // Options: dex_dex, new_pool, pumpfun
+  ENABLED_DETECTORS: (process.env.ENABLED_DETECTORS || 'dex_dex')
+    .split(',').map(s => s.trim()).filter(Boolean),
+
   // Storage
   DB_PATH: process.env.DB_PATH || path.join(ROOT, 'data', 'ferreus.db'),
 
