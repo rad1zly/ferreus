@@ -91,21 +91,31 @@ module.exports = {
   // instead of Jupiter smart router. Captures the actual AMM-level gap.
   ARB_USE_DIRECT_DEX: envBool('ARB_USE_DIRECT_DEX', true),
 
+  // Pool subscription programs (CPU tuning)
+  POOL_WATCH_CPMM_ENABLED: envBool('POOL_WATCH_CPMM_ENABLED', true),
+  POOL_WATCH_CLMM_ENABLED: envBool('POOL_WATCH_CLMM_ENABLED', true),
+  POOL_WATCH_WHIRLPOOL_ENABLED: envBool('POOL_WATCH_WHIRLPOOL_ENABLED', true),
+  // DLMM/DAMM v2 — partial decoders, high error rate. Default OFF until full decoder.
+  POOL_WATCH_DLMM_ENABLED: envBool('POOL_WATCH_DLMM_ENABLED', false),
+  POOL_WATCH_DAMM_V2_ENABLED: envBool('POOL_WATCH_DAMM_V2_ENABLED', false),
+  // Per-pool decode throttle (ms) — skip re-decode same pool within N ms
+  POOL_DECODE_THROTTLE_MS: envInt('POOL_DECODE_THROTTLE_MS', 5000),
+  // Error log sampling (1 in N errors logged to stdout)
+  POOL_ERROR_LOG_SAMPLE: envInt('POOL_ERROR_LOG_SAMPLE', 100),
+  // Stats log interval (ms) — default 60s to reduce log overhead
+  POOL_STATS_INTERVAL_MS: envInt('POOL_STATS_INTERVAL_MS', 60000),
+  // Max in-flight events (backpressure — drop new events if queue full)
+  POOL_MAX_INFLIGHT: envInt('POOL_MAX_INFLIGHT', 2000),
   // Vault reader (Pool-2.5)
   VAULT_READER_ENABLED: envBool('VAULT_READER_ENABLED', true),
   VAULT_REFRESH_MS: envInt('VAULT_REFRESH_MS', 10000),
-
-  // Execution (Pool-3+)
-  EXECUTION_ENABLED: envBool('EXECUTION_ENABLED', false),  // master switch (off by default)
-  WALLET_PRIVATE_KEY: envString('WALLET_PRIVATE_KEY'),     // base58 or B64: prefix
+  VAULT_BATCH_SIZE: envInt('VAULT_BATCH_SIZE', 100),
+  // Price oracle
+  PRICE_REFRESH_MS: envInt('PRICE_REFRESH_MS', 3600000),
+  // Jito bundle
   JITO_TIP_LAMPORTS: envInt('JITO_TIP_LAMPORTS', 10000),   // 0.00001 SOL default
   JITO_BLOCK_ENGINE_URL: envString('JITO_BLOCK_ENGINE_URL', 'https://mainnet.block-engine.jito.wtf/api/v1/bundles'),
   PRIORITY_FEE_LAMPORTS: envInt('PRIORITY_FEE_LAMPORTS', 1000),  // 0.000001 SOL
-
-  // Live mode (Pool-5) — explicit override of DRY_RUN for trade execution only
-  // Pool-3 runs in DRY_RUN mode by default (logs projected PnL, no tx)
-  LIVE_EXECUTE: envBool('LIVE_EXECUTE', false),
-  ARB_MIN_DECIMALS_OK: envBool('ARB_MIN_DECIMALS_OK', true),
 
   // Storage
   DB_PATH: process.env.DB_PATH || path.join(ROOT, 'data', 'ferreus.db'),

@@ -42,13 +42,18 @@ class PoolSubscription {
       events: 0,
       decoded: 0,
       errors: 0,
+      skipped: 0,
+      dropped: 0,
       lastEventTs: 0,
       lastDecodedTs: 0,
+      lastStatsLogTs: 0,
       byProgram: {},   // { raydium_cpmm: 0, ... }
     };
     this._db = null;
     this._writeQueue = [];
     this._writeTimer = null;
+    this._decodeLog = new Map();  // poolKey -> ts (per-pool throttle)
+    this._errSampleCount = 0;
   }
 
   attachDb(database) {
@@ -67,8 +72,19 @@ class PoolSubscription {
       vaultReader.start();
     }
 
-    // Subscribe to each program. Use legacy 4-arg signature for compatibility.
+    // Subscribe to each program (if enabled in config). Use legacy 4-arg signature.
+    const programEnabled = {
+      raydium_cpmm: config.POOL_WATCH_CPMM_ENABLED,
+      raydium_clmm: config.POOL_WATCH_CLMM_ENABLED,
+      orca_whirlpool: config.POOL_WATCH_WHIRLPOOL_ENABLED,
+      meteora_dlmm: config.POOL_WATCH_DLMM_ENABLED,
+      meteora_damm_v2: config.POOL_WATCH_DAMM_V2_ENABLED,
+    };
     for (const [name, info] of Object.entries(decoder.PROGRAMS)) {
+      if (!programEnabled[name]) {
+        log.info(`[pool-watch] SKIPPED ${name} (POOL_WATCH_${name.toUpperCase()}_ENABLED=false)`);
+        continue;
+      }
       try {
         const programId = new PublicKey(info.id);
         const dataSize = POOL_DATA_SIZE[name];
@@ -120,13 +136,39 @@ class PoolSubscription {
     this.stats.lastEventTs = Date.now();
     this.stats.byProgram[programName] = (this.stats.byProgram[programName] || 0) + 1;
 
+    // Backpressure: drop new events if queue full (CPU protection)
+    if (this._writeQueue.length > config.POOL_MAX_INFLIGHT) {
+      this.stats.dropped++;
+      return;
+    }
+
+    const { accountId, accountInfo } = keyedAccountInfo;
+    const poolKey = `${programName}:${accountId.toBase58()}`;
+
+    // Per-pool decode throttle — skip if same pool within N ms
+    const lastDecode = this._decodeLog.get(poolKey) || 0;
+    const now = Date.now();
+    if (now - lastDecode < config.POOL_DECODE_THROTTLE_MS) {
+      this.stats.skipped++;
+      return;
+    }
+    this._decodeLog.set(poolKey, now);
+    // Periodically prune old entries to avoid Map growth
+    if (this._decodeLog.size > 50000) {
+      const cutoff = now - 60000;
+      for (const [k, t] of this._decodeLog) if (t < cutoff) this._decodeLog.delete(k);
+    }
+
     try {
-      const { accountId, accountInfo } = keyedAccountInfo;
       const data = accountInfo.data;
       const decoded = decoder.decodePoolAccount(programId, data);
       if (decoded._error) {
         this.stats.errors++;
-        // Don't log every error (would be spammy)
+        // Sample error logs (default 1 in 100)
+        this._errSampleCount++;
+        if (config.POOL_ERROR_LOG_SAMPLE > 0 && this._errSampleCount % config.POOL_ERROR_LOG_SAMPLE === 0) {
+          log.debug(`[pool-watch] decode errors suppressed: ${this.stats.errors} total (${programName})`);
+        }
         return;
       }
       if (!decoded.mintA || !decoded.mintB) {
@@ -203,7 +245,10 @@ class PoolSubscription {
       }
     } catch (e) {
       this.stats.errors++;
-      log.warn(`[pool-watch] decode error: ${e.message}`);
+      this._errSampleCount++;
+      if (config.POOL_ERROR_LOG_SAMPLE > 0 && this._errSampleCount % config.POOL_ERROR_LOG_SAMPLE === 0) {
+        log.warn(`[pool-watch] decode error: ${e.message} (suppressed, total=${this.stats.errors})`);
+      }
     }
   }
 
@@ -221,12 +266,14 @@ class PoolSubscription {
         for (const r of rows) upsert.run(r);
       });
       tx(batch);
-      // Periodic stats log
-      if (this.stats.events % 50 < batch.length) {
+      // Periodic stats log (configurable interval, default 60s)
+      const now = Date.now();
+      if (now - this.stats.lastStatsLogTs > config.POOL_STATS_INTERVAL_MS) {
+        this.stats.lastStatsLogTs = now;
         log.info(
           `[pool-watch] events=${this.stats.events} decoded=${this.stats.decoded} ` +
-          `errs=${this.stats.errors} queued=${batch.length} ` +
-          `by_program=${JSON.stringify(this.stats.byProgram)}`
+          `errs=${this.stats.errors} skipped=${this.stats.skipped} dropped=${this.stats.dropped} ` +
+          `q=${this._writeQueue.length} by=${JSON.stringify(this.stats.byProgram)}`
         );
       }
     } catch (e) {
