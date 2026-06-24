@@ -267,7 +267,9 @@ async function main() {
       // --- Pool-3: process new arbs (every 10s) ---
       // Jupiter throttle: 1 RPS + 2 quotes per arb = 1 arb every ~2.5s
       // Poll every 10s to keep rate of new arb attempts sustainable
-      if (Date.now() - lastArbProcess > 10000 && config.EXECUTION_ENABLED) {
+      // Run if DRY_RUN (simulate) OR LIVE_EXECUTE with key (real)
+      const executionEnabled = config.DRY_RUN || (config.LIVE_EXECUTE && config.WALLET_PRIVATE_KEY);
+      if (Date.now() - lastArbProcess > 10000 && executionEnabled) {
         try {
           // Find arbs that haven't been executed yet
           const newArbs = database.db.prepare(`

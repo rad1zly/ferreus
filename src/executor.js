@@ -100,28 +100,33 @@ class Executor {
     // DIRECT 2-DEX quote: restrict each leg to the specific DEX we detected.
     // q1 = sell SOL on EXPENSIVE_dex (we get more intermediate)
     // q2 = buy SOL on CHEAP_dex (we pay less intermediate per SOL)
-    // Net effect: capture the actual AMM gap
-    const useDirectRoute = opts.useDirectRoute ?? config.ARB_USE_DIRECT_2DEX_ROUTE ?? true;
+    // Net effect: capture the actual AMM gap (minus Jupiter fees + slippage)
+    // This is the core arb strategy — Jupiter's smart router eats the spread
+    // when not restricted, so direct routes are required.
 
     try {
+      // Step 1: SOL → intermediate on EXPENSIVE DEX (where SOL is more valuable,
+      //          i.e. SOL fetches more mint0 here). Sell SOL here.
       const quote1 = await jupiter.getQuote({
         inputMint: WSOL_MINT,
         outputMint: intermediateMint,
         amount: amountInLamports,
         slippageBps,
-        restrictToDex: useDirectRoute ? arb.expensiveDex : null,
+        restrictToDex: arb.expensiveDex,  // <-- 2-DEX direct route
       });
       if (!quote1 || !quote1.outAmount) {
         this._logTrade({ arb, mode: this._mode(), status: 'skipped', mintIn: WSOL_MINT, mintOut: intermediateMint, amountInLamports, amountInSol, errorMsg: 'quote1 failed' });
         return null;
       }
 
+      // Step 2: intermediate → SOL on CHEAP DEX (where SOL is less valuable,
+      //          i.e. SOL fetches less mint0 here). Buy SOL here.
       const quote2 = await jupiter.getQuote({
         inputMint: intermediateMint,
         outputMint: WSOL_MINT,
         amount: quote1.outAmount,
         slippageBps,
-        restrictToDex: useDirectRoute ? arb.cheapDex : null,
+        restrictToDex: arb.cheapDex,  // <-- 2-DEX direct route
       });
       if (!quote2 || !quote2.outAmount) {
         this._logTrade({ arb, mode: this._mode(), status: 'skipped', mintIn: intermediateMint, mintOut: WSOL_MINT, amountInLamports: quote1.outAmount, errorMsg: 'quote2 failed' });
