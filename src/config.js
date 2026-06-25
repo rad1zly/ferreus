@@ -83,6 +83,9 @@ module.exports = {
   // Pool-5: live execution
   LIVE_EXECUTE: envBool('LIVE_EXECUTE', false),
   WALLET_PRIVATE_KEY: process.env.WALLET_PRIVATE_KEY || null,
+  // Phase "Weird": weird pool detector + multi-hop path finder
+  WEIRD_GAP_RATIO: envFloat('WEIRD_GAP_RATIO', 3.0),
+  WEIRD_MIN_PATH_RETURN: envFloat('WEIRD_MIN_PATH_RETURN', 1.02),
   // Pool-3: execution-time gap filter (skip attempts on tiny AMM gaps that won't cover fees)
   ARB_MIN_GAP_BPS_FOR_EXEC: envInt('ARB_MIN_GAP_BPS_FOR_EXEC', 100),  // 1% default
   // Pool-3: per-arb execution cooldown (avoid double-fee on same opportunity)

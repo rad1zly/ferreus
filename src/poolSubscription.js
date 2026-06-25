@@ -19,7 +19,7 @@ const decoder = require('./poolDecoder');
 const config = require('./config');
 const arbDetector = require('./arbDetector');
 const vaultReader = require('./vaultReader');
-const weirdDetector = require('./weirdDetector');
+const weirdPoolDetector = require('./weirdPoolDetector');
 
 const DEFAULT_WSS = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com/';
 
@@ -59,6 +59,7 @@ class PoolSubscription {
   attachDb(database) {
     this._db = database;
     arbDetector.attachDb(database);
+    weirdPoolDetector.attachDb(database);
   }
 
   /**
@@ -136,6 +137,7 @@ class PoolSubscription {
     if (config.VAULT_READER_ENABLED) {
       vaultReader.stop();
     }
+    weirdPoolDetector.stop();
     log.info('[pool-watch] stopped');
   }
 
@@ -273,6 +275,28 @@ class PoolSubscription {
           log.warn(`[pool-watch] arb check error: ${e.message}`);
         }
       }
+
+      // Weird pool detector (Phase "Weird") — fires on every pool update
+      // (not just new ones; tracks price changes for path finder)
+      try {
+        weirdPoolDetector.onPool({
+          pubkey: accountId.toBase58(),
+          dex: decoded.dex,
+          mintA: decoded.mintA,
+          mintB: decoded.mintB,
+          decimalsA: decoded.decimalsA,
+          decimalsB: decoded.decimalsB,
+          priceNative: priceForArb,
+          vaultA: decoded.vaultA,
+          vaultB: decoded.vaultB,
+          ts: Date.now(),
+        }).catch(e => {
+          if (this._weirdErrCount === undefined) this._weirdErrCount = 0;
+          if (this._weirdErrCount++ % 100 === 0) {
+            log.warn(`[pool-watch] weird check error: ${e.message}`);
+          }
+        });
+      } catch (_) { /* non-fatal */ }
     } catch (e) {
       this.stats.errors++;
       this._errSampleCount++;

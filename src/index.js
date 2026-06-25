@@ -15,8 +15,7 @@ const jitoClient = require('./jitoClient');
 const jitoTip = require('./jitoTip');
 const coingecko = require('./coingecko');
 const priceOracle = require('./priceOracle');
-const weirdDetector = require('./weirdDetector');
-const pathFinder = require('./pathFinder');
+const weirdPoolDetector = require('./weirdPoolDetector');
 const telegramBot = require('./telegramBot');
 const notifier = require('./notifier');
 const safety = require('./safety');
@@ -125,24 +124,20 @@ async function main() {
 
   // --- Detector D: pool-watch (WSS subscription) — Phase Pool-1 of dead-pool MEV ---
   // Detector E (cross-DEX arb) starts automatically with D (uses same data)
+  // Weird pool detector (Phase "Weird") runs alongside
   if (hasD) {
     poolSubscription.attachDb(database);
-    // Wire weird-pool detector (Phase Weird-1/2/3) — pivot to "find exotic pools"
-    weirdDetector.attachDb(database);
-    weirdDetector.setPathFinder(pathFinder);
-    poolSubscription.onNewPool((pool) => weirdDetector.onNewPool(pool));
     await poolSubscription.start();
     if (hasE) arbDetector.start();
+    await weirdPoolDetector.start();
   } else {
     log.info('[main] Detector D (pool-watch) DISABLED — set ENABLED_DETECTORS=pool_watch to enable');
     if (hasE) {
       log.warn('[main] Detector E (pool-arb) requires Detector D — starting pool-watch too');
       poolSubscription.attachDb(database);
-      weirdDetector.attachDb(database);
-      weirdDetector.setPathFinder(pathFinder);
-      poolSubscription.onNewPool((pool) => weirdDetector.onNewPool(pool));
       await poolSubscription.start();
       arbDetector.start();
+      await weirdPoolDetector.start();
     }
   }
   const TRENDING_REFRESH_MS = 5 * 60 * 1000;
@@ -228,8 +223,7 @@ async function main() {
         const arbStats = (hasD && hasE) ? arbDetector.getStats() : null;
         const vaultStats = (hasD && config.VAULT_READER_ENABLED) ? vaultReader.getStats() : null;
         const execStats = (hasD && hasE) ? executor.getStats() : null;
-        const weirdStats = hasD ? weirdDetector.getStats() : null;
-        const pathStats = hasD ? pathFinder.getStats() : null;
+        const weirdStats = hasD ? weirdPoolDetector.getStats() : null;
         let msg = `📊 ${Math.round((Date.now() - startTs) / 60000)}min uptime\n` +
           `Detector A (DEX-DEX): ${totalOpps} opps`;
         if (npStats) {
@@ -251,7 +245,7 @@ async function main() {
           msg += `\nExecutor: ${execStats.simulated} sim, ${execStats.failed} fail, est profit=${execStats.totalGrossProfitSol.toFixed(6)} SOL`;
         }
         if (weirdStats) {
-          msg += `\nWeird detector: ${weirdStats.newPoolsSeen} new pools seen, ${weirdStats.weirdPoolsFound} weird flagged, ${weirdStats.pathsFound} paths`;
+          msg += `\nWeird detector: ${weirdStats.newPoolsDetected} new pools, ${weirdStats.weirdPoolsFlagged} weird flagged, ${weirdStats.poolsTracked} pools tracked, ${weirdStats.pathsFound} paths`;
         }
         await notifier.info(msg);
         lastStatsNotif = Date.now();
@@ -328,6 +322,7 @@ function setupShutdownHandlers() {
     try { if (typeof decoderWorker !== 'undefined') decoderWorker.stop(); } catch (e) {}
     try { if (typeof poolSubscription !== 'undefined') poolSubscription.stop(); } catch (e) {}
     try { if (typeof arbDetector !== 'undefined') arbDetector.stop(); } catch (e) {}
+    try { if (typeof weirdPoolDetector !== 'undefined') weirdPoolDetector.stop(); } catch (e) {}
     try { if (typeof coingecko !== 'undefined') coingecko.stop && coingecko.stop(); } catch (e) {}
     setTimeout(() => process.exit(0), 1000);
   };
