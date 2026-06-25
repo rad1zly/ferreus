@@ -19,6 +19,7 @@ const decoder = require('./poolDecoder');
 const config = require('./config');
 const arbDetector = require('./arbDetector');
 const vaultReader = require('./vaultReader');
+const weirdDetector = require('./weirdDetector');
 
 const DEFAULT_WSS = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com/';
 
@@ -42,23 +43,30 @@ class PoolSubscription {
       events: 0,
       decoded: 0,
       errors: 0,
-      skipped: 0,
-      dropped: 0,
       lastEventTs: 0,
       lastDecodedTs: 0,
-      lastStatsLogTs: 0,
+      newPoolsDetected: 0,
       byProgram: {},   // { raydium_cpmm: 0, ... }
     };
     this._db = null;
     this._writeQueue = [];
     this._writeTimer = null;
-    this._decodeLog = new Map();  // poolKey -> ts (per-pool throttle)
-    this._errSampleCount = 0;
+    this._seenPubkeys = new Set();  // for new-pool detection
+    this._newPoolListeners = [];    // callbacks for new pools
+    this._decodeLog = new Map();    // poolKey -> ts (per-pool throttle)
   }
 
   attachDb(database) {
     this._db = database;
     arbDetector.attachDb(database);
+  }
+
+  /**
+   * Register a callback for new pool detection.
+   * Callback receives { pubkey, dex, mintA, mintB, priceNative, decimalsA, decimalsB, vaultA, vaultB, ts }
+   */
+  onNewPool(callback) {
+    this._newPoolListeners.push(callback);
   }
 
   async start() {
@@ -149,7 +157,6 @@ class PoolSubscription {
     const lastDecode = this._decodeLog.get(poolKey) || 0;
     const now = Date.now();
     if (now - lastDecode < config.POOL_DECODE_THROTTLE_MS) {
-      this.stats.skipped++;
       return;
     }
     this._decodeLog.set(poolKey, now);
@@ -196,6 +203,29 @@ class PoolSubscription {
       let priceForArb = decoded.priceNative;
       if (!priceForArb && decoded.dex === 'raydium_cpmm') {
         priceForArb = vaultReader.computePriceForPool(accountId.toBase58());
+      }
+
+      // New pool detection (Phase Weird-1): first time we see this pubkey
+      const isNewPool = !this._seenPubkeys.has(accountId.toBase58());
+      if (isNewPool) {
+        this._seenPubkeys.add(accountId.toBase58());
+        this.stats.newPoolsDetected++;
+        // Fire callbacks (don't await — fire-and-forget)
+        const newPoolInfo = {
+          pubkey: accountId.toBase58(),
+          dex: decoded.dex,
+          mintA: decoded.mintA,
+          mintB: decoded.mintB,
+          decimalsA: decoded.decimalsA,
+          decimalsB: decoded.decimalsB,
+          priceNative: priceForArb,
+          vaultA: decoded.vaultA,
+          vaultB: decoded.vaultB,
+          ts: Date.now(),
+        };
+        for (const cb of this._newPoolListeners) {
+          try { cb(newPoolInfo); } catch (e) { /* swallow */ }
+        }
       }
 
       // Queue DB write
@@ -288,6 +318,7 @@ class PoolSubscription {
       ...this.stats,
       subscriptions: this.subscriptions.length,
       queueDepth: this._writeQueue.length,
+      seenPubkeys: this._seenPubkeys.size,
     };
   }
 }

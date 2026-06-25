@@ -12,10 +12,11 @@ const arbDetector = require('./arbDetector');
 const vaultReader = require('./vaultReader');
 const executor = require('./executor');
 const jitoClient = require('./jitoClient');
-const jupiterClient = require('./jupiterClient');
 const jitoTip = require('./jitoTip');
 const coingecko = require('./coingecko');
 const priceOracle = require('./priceOracle');
+const weirdDetector = require('./weirdDetector');
+const pathFinder = require('./pathFinder');
 const telegramBot = require('./telegramBot');
 const notifier = require('./notifier');
 const safety = require('./safety');
@@ -126,6 +127,10 @@ async function main() {
   // Detector E (cross-DEX arb) starts automatically with D (uses same data)
   if (hasD) {
     poolSubscription.attachDb(database);
+    // Wire weird-pool detector (Phase Weird-1/2/3) — pivot to "find exotic pools"
+    weirdDetector.attachDb(database);
+    weirdDetector.setPathFinder(pathFinder);
+    poolSubscription.onNewPool((pool) => weirdDetector.onNewPool(pool));
     await poolSubscription.start();
     if (hasE) arbDetector.start();
   } else {
@@ -133,6 +138,9 @@ async function main() {
     if (hasE) {
       log.warn('[main] Detector E (pool-arb) requires Detector D — starting pool-watch too');
       poolSubscription.attachDb(database);
+      weirdDetector.attachDb(database);
+      weirdDetector.setPathFinder(pathFinder);
+      poolSubscription.onNewPool((pool) => weirdDetector.onNewPool(pool));
       await poolSubscription.start();
       arbDetector.start();
     }
@@ -220,6 +228,8 @@ async function main() {
         const arbStats = (hasD && hasE) ? arbDetector.getStats() : null;
         const vaultStats = (hasD && config.VAULT_READER_ENABLED) ? vaultReader.getStats() : null;
         const execStats = (hasD && hasE) ? executor.getStats() : null;
+        const weirdStats = hasD ? weirdDetector.getStats() : null;
+        const pathStats = hasD ? pathFinder.getStats() : null;
         let msg = `📊 ${Math.round((Date.now() - startTs) / 60000)}min uptime\n` +
           `Detector A (DEX-DEX): ${totalOpps} opps`;
         if (npStats) {
@@ -229,7 +239,7 @@ async function main() {
           msg += `\nDetector C (pumpfun):  ${pfStats.migrationEvents} migrations from ${pfStats.sigsSeen} sigs`;
         }
         if (poolStats) {
-          msg += `\nDetector D (pool-watch): ${poolStats.events} events, ${poolStats.decoded} decoded, ${poolStats.errors} errs`;
+          msg += `\nDetector D (pool-watch): ${poolStats.events} events, ${poolStats.decoded} decoded, ${poolStats.errors} errs, ${poolStats.newPoolsDetected} new pools`;
         }
         if (arbStats) {
           msg += `\nDetector E (pool-arb): ${arbStats.gapsLogged} arbs logged, ${arbStats.pairsTracked} pairs tracked`;
@@ -238,12 +248,10 @@ async function main() {
           msg += `\nVault reader: ${vaultStats.vaultsCached}/${vaultStats.vaultsTracked} cached, ${vaultStats.refreshes} refreshes`;
         }
         if (execStats && (execStats.simulated + execStats.submitted + execStats.failed) > 0) {
-          msg += `\nExecutor: ${execStats.simulated} sim, ${execStats.failed} fail, est profit=$${execStats.totalProjectedProfitUsd.toFixed(2)}`;
+          msg += `\nExecutor: ${execStats.simulated} sim, ${execStats.failed} fail, est profit=${execStats.totalGrossProfitSol.toFixed(6)} SOL`;
         }
-        const jupStats = jupiterClient.stats;
-        if (jupStats.quotes > 0) {
-          const successRate = (jupStats.success / jupStats.quotes * 100).toFixed(1);
-          msg += `\nJupiter: ${jupStats.success}/${jupStats.quotes} ok (${successRate}%), ${jupStats.rateLimits} 429s, ${jupStats.retries} retries`;
+        if (weirdStats) {
+          msg += `\nWeird detector: ${weirdStats.newPoolsSeen} new pools seen, ${weirdStats.weirdPoolsFound} weird flagged, ${weirdStats.pathsFound} paths`;
         }
         await notifier.info(msg);
         lastStatsNotif = Date.now();

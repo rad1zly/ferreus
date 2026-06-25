@@ -179,6 +179,42 @@ function init() {
     -- (cheap_tvl_usd, expensive_tvl_usd already added above? no — addCol needs column check)
     -- The simpler approach: just add the columns if missing
   `);
+
+  // Weird-1: weird_pools table (pools with mispriced reserves vs reference)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS weird_pools (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts INTEGER NOT NULL,
+      pubkey TEXT NOT NULL,
+      dex TEXT NOT NULL,
+      mint_a TEXT NOT NULL,
+      mint_b TEXT NOT NULL,
+      price_display REAL,
+      ref_price REAL,
+      ratio REAL,
+      direction TEXT,            -- 'cheap' or 'expensive'
+      weirdness_pct REAL,
+      alerted INTEGER DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_weird_pools_ts ON weird_pools(ts);
+    CREATE INDEX IF NOT EXISTS idx_weird_pools_ratio ON weird_pools(ratio);
+  `);
+
+  // Weird-3: arb_paths (multi-hop paths found by pathFinder)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS arb_paths (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts INTEGER NOT NULL,
+      weird_pool_id INTEGER,
+      source_pool TEXT,
+      path_json TEXT,
+      expected_return_x REAL,
+      trade_size_sol REAL,
+      executed INTEGER DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_arb_paths_ts ON arb_paths(ts);
+    CREATE INDEX IF NOT EXISTS idx_arb_paths_source ON arb_paths(source_pool);
+  `);
   // Idempotent ALTER for arb_candidates TVL columns
   const arbCols = db.prepare("PRAGMA table_info(arb_candidates)").all();
   const arbColNames = new Set(arbCols.map(c => c.name));
@@ -343,6 +379,22 @@ function init() {
     `),
     markArbExecuted: db.prepare(`
       UPDATE arb_candidates SET executed = 1, trade_id = @trade_id WHERE id = @arb_id
+    `),
+    insertWeirdPool: db.prepare(`
+      INSERT INTO weird_pools (
+        ts, pubkey, dex, mint_a, mint_b,
+        price_display, ref_price, ratio, direction, weirdness_pct
+      ) VALUES (
+        @ts, @pubkey, @dex, @mint_a, @mint_b,
+        @price_display, @ref_price, @ratio, @direction, @weirdness_pct
+      )
+    `),
+    insertArbPath: db.prepare(`
+      INSERT INTO arb_paths (
+        ts, weird_pool_id, source_pool, path_json, expected_return_x, trade_size_sol
+      ) VALUES (
+        @ts, @weird_pool_id, @source_pool, @path_json, @expected_return_x, @trade_size_sol
+      )
     `),
     countArbCandidates: db.prepare(`SELECT COUNT(*) AS c FROM arb_candidates`),
     recentArbCandidates: db.prepare(`SELECT * FROM arb_candidates ORDER BY ts DESC LIMIT ?`),

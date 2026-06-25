@@ -31,10 +31,16 @@ async function _throttledGet(url) {
     const res = await axios.get(url, { timeout: REQUEST_TIMEOUT });
     return res.data;
   } catch (e) {
-    log.warn(`[oracle] coingecko request failed: ${e.message}`);
+    // Throttle 404/429 noise: only log first time per URL pattern
+    const key = url.split('?')[0];
+    if (!_warnedUrls.has(key)) {
+      log.warn(`[oracle] coingecko request failed: ${e.message}`);
+      _warnedUrls.add(key);
+    }
     return null;
   }
 }
+const _warnedUrls = new Set();
 
 /**
  * Look up the CoinGecko ID for a Solana mint via /coins/list?include_platform=true.
